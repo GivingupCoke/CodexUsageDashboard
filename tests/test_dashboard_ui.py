@@ -9,13 +9,14 @@ from usage_core import BEIJING, ModelUsage, UsageReport
 
 
 def create_dashboard():
-    """Retry only the known transient second-interpreter Tcl initialization failure."""
-    for attempt in range(2):
+    """Retry only known transient Tcl initialization failures."""
+    max_attempts = 4
+    for attempt in range(max_attempts):
         try:
             return dashboard.UsageDashboard()
         except tk.TclError as exc:
             transient_errors = ("Can't find a usable tk.tcl", 'invalid command name "tcl_findLibrary"')
-            if attempt or not any(message in str(exc) for message in transient_errors):
+            if attempt == max_attempts - 1 or not any(message in str(exc) for message in transient_errors):
                 raise
             time.sleep(0.05)
     raise AssertionError("unreachable")
