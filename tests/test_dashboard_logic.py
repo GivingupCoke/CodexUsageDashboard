@@ -141,6 +141,23 @@ def test_quota_lines_do_not_treat_a_five_hour_primary_window_as_weekly():
     assert weekly[1] is None
 
 
+def test_tray_tooltip_is_short_and_summarizes_both_quotas():
+    report = UsageReport(
+        input_tokens=6_459_361,
+        output_tokens=21_857,
+        weekly_used_percent=13,
+        five_hour_used_percent=83,
+        rate_limit_window_minutes=10_080,
+    )
+
+    tooltip = dashboard._tray_tooltip(report)
+
+    assert len(tooltip) <= 127
+    assert "今日 6.48M" in tooltip
+    assert "5小时 83%" in tooltip
+    assert "一周 13%" in tooltip
+
+
 def test_model_options_are_unique_and_sorted_by_total_usage():
     first = UsageReport(
         by_model={

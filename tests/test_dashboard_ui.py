@@ -264,6 +264,7 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert "一周额度" in root._tray_status
         assert "未计价：stealth/ox-alpha" in root._tray_status
         assert len(root._tray_status_lines) == 8
+        assert len(root._tray_tooltip) <= 127
 
         root.pin_button.invoke()
         assert root._topmost.get() is False
@@ -305,6 +306,10 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root._show_main_window()
         assert root.state() != "withdrawn"
         root._tray_icon = None
+        root._setup_tray = lambda: None
+        root._window_handle = None
+        root.close_button.invoke()
+        assert root.state() == "iconic"
     finally:
         root.destroy()
 

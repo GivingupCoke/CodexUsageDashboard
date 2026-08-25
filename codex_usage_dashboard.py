@@ -218,6 +218,21 @@ def _quota_bar(used_percent: float | None) -> str:
     return "█" * filled + "░" * (10 - filled)
 
 
+def _tray_tooltip(report: UsageReport) -> str:
+    quota_by_label = {label: used_percent for label, used_percent, _reset_at in _quota_lines(report)}
+
+    def percent(label: str) -> str:
+        value = quota_by_label.get(label)
+        return "未知" if value is None else f"{value:.0f}%"
+
+    tooltip = (
+        f"{APP_DISPLAY_NAME} · 今日 {format_tokens(report.total_tokens)} · "
+        f"5小时 {percent('5 小时额度（全局）')} · 一周 {percent('一周额度（全局）')}"
+    )
+    # Windows NOTIFYICONDATA.szTip is WCHAR[128], including the null terminator.
+    return tooltip[:127]
+
+
 def _set_native_titlebar_dark(window: tk.Misc) -> None:
     if sys.platform != "win32" or not window.winfo_exists():
         return
@@ -266,6 +281,7 @@ class UsageDashboard(tk.Tk):
             "未计价：读取中…",
         ]
         self._tray_status = "\n".join(self._tray_status_lines)
+        self._tray_tooltip = f"{APP_DISPLAY_NAME} · 正在读取用量"
         self._last_report: UsageReport | None = None
         self._history_window: HistoryWindow | None = None
         self._refresh_results = LatestResultQueue()
@@ -346,14 +362,10 @@ class UsageDashboard(tk.Tk):
             self._tray_icon = pystray.Icon(
                 "CodexUsageDashboard",
                 tray_image,
-                self._tray_status,
+                self._tray_tooltip,
                 menu,
             )
-            threading.Thread(
-                target=self._tray_icon.run,
-                name="CodexUsageDashboardTray",
-                daemon=True,
-            ).start()
+            self._tray_icon.run_detached()
         except (ImportError, OSError, tk.TclError):
             self._tray_icon = None
 
@@ -377,9 +389,13 @@ class UsageDashboard(tk.Tk):
             f"未计价：{unpriced}",
         ]
         self._tray_status = "\n".join(self._tray_status_lines)
+        self._tray_tooltip = _tray_tooltip(report)
         if self._tray_icon is not None:
-            self._tray_icon.title = self._tray_status
-            self._tray_icon.update_menu()
+            try:
+                self._tray_icon.title = self._tray_tooltip
+                self._tray_icon.update_menu()
+            except (OSError, ValueError):
+                pass
 
     def _show_main_window(self) -> None:
         if not self.winfo_exists():
@@ -397,8 +413,10 @@ class UsageDashboard(tk.Tk):
 
     def _close_to_tray(self) -> None:
         if self._tray_icon is None:
-            self.destroy()
-            return
+            self._setup_tray()
+            if self._tray_icon is None:
+                self._minimize_window()
+                return
         if self._history_window is not None and self._history_window.winfo_exists():
             self._history_window.withdraw()
         self.withdraw()
