@@ -169,8 +169,12 @@ def test_dashboard_and_history_user_flow(monkeypatch):
 
         monkeypatch.setattr(dashboard, "collect_usage", lambda *_args, **_kwargs: make_report())
         root.refresh()
+        assert root.refresh_button.cget("bg") == dashboard.BORDER
+        root.refresh_button.event_generate("<Enter>")
+        assert root.refresh_button.cget("bg") == dashboard.BORDER
         root.refresh()
         pump_until(root, lambda: root._last_report is not None)
+        assert root.refresh_button.cget("bg") == dashboard.ACCENT
 
         def fail_history(*_args, **_kwargs):
             raise ValueError("history unavailable")
@@ -216,6 +220,30 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.refresh_button.cget("text") == "刷新"
         assert root.history_button.cget("fg") == dashboard.TEXT
         assert root.refresh_button.cget("fg") == "#ffffff"
+        assert root.history_button.bind("<Enter>")
+        assert root.history_button.bind("<Leave>")
+        assert root.history_button.bind("<ButtonPress-1>")
+        assert root.refresh_button.bind("<Enter>")
+        assert root.refresh_button.bind("<Leave>")
+        assert root.refresh_button.bind("<ButtonPress-1>")
+
+        root.history_button.event_generate("<Enter>")
+        assert root.history_button.cget("bg") == dashboard.BORDER
+        root.history_button.event_generate("<ButtonPress-1>")
+        assert root.history_button.cget("bg") == dashboard.ACTION_PRESSED_BG
+        root.history_button.event_generate("<ButtonRelease-1>")
+        assert root.history_button.cget("bg") == dashboard.BORDER
+        root.history_button.event_generate("<Leave>")
+        assert root.history_button.cget("bg") == dashboard.CARD
+
+        root.refresh_button.event_generate("<Enter>")
+        assert root.refresh_button.cget("bg") == dashboard.ACCENT_HOVER
+        root.refresh_button.event_generate("<ButtonPress-1>")
+        assert root.refresh_button.cget("bg") == dashboard.ACCENT_PRESSED_BG
+        root.refresh_button.event_generate("<ButtonRelease-1>")
+        assert root.refresh_button.cget("bg") == dashboard.ACCENT_HOVER
+        root.refresh_button.event_generate("<Leave>")
+        assert root.refresh_button.cget("bg") == dashboard.ACCENT
         root._update_tray_status(make_report(unknown=True))
         assert "今日总 Token" in root._tray_status
         assert "API 参考估算" in root._tray_status
