@@ -41,6 +41,10 @@ def test_windows_release_build_is_reproducible():
     assert "publish-release:" in workflow
     assert "contents: read" in workflow
     assert "gh release" in workflow
+    assert "path: dist/CodexUsageDashboard.exe" in workflow
+    assert "executable=\"./release/CodexUsageDashboard.exe\"" in workflow
+    assert "Compress-Archive" not in workflow
+    assert "windows-x64.zip" not in workflow
 
 
 def test_readme_leads_with_double_click_release_instructions():

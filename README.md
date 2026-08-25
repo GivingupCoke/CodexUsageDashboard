@@ -134,9 +134,8 @@ README 中的价格来源链接仅供人工核对，程序运行时不会访问�
 普通用户无需安装 Python、创建虚拟环境或输入命令：
 
 1. 打开仓库右侧的 **[Releases](../../releases/latest)** 页面。
-2. 下载最新的 `CodexUsageDashboard-windows-x64.zip`。
-3. 解压 ZIP 文件。
-4. 双击 `CodexUsageDashboard.exe`。
+2. 直接下载最新的 `CodexUsageDashboard.exe`。
+3. 双击 `CodexUsageDashboard.exe`。
 
 程序会自动读取当前 Windows 用户的：
 
@@ -204,8 +203,7 @@ dist\CodexUsageDashboard.exe
 
 1. 在 Windows 环境运行测试。
 2. 使用 PyInstaller 构建单文件 EXE。
-3. 生成 `CodexUsageDashboard-windows-x64.zip`。
-4. 创建对应的 GitHub Release 并上传压缩包。
+3. 创建对应的 GitHub Release 并直接上传 `CodexUsageDashboard.exe`。
 
 示例：
 

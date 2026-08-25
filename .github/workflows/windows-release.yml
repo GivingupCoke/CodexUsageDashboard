@@ -35,19 +35,11 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows.ps1 -SkipTests
 
-      - name: Create release archive
-        shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path .\dist\CodexUsageDashboard.exe, .\README.md `
-            -DestinationPath .\dist\CodexUsageDashboard-windows-x64.zip `
-            -Force
-
-      - name: Upload workflow artifact
+      - name: Upload Windows executable artifact
         uses: actions/upload-artifact@v7
         with:
           name: CodexUsageDashboard-windows-x64
-          path: dist/CodexUsageDashboard-windows-x64.zip
+          path: dist/CodexUsageDashboard.exe
           if-no-files-found: error
 
   publish-release:
@@ -58,7 +50,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Download Windows artifact
+      - name: Download Windows executable artifact
         uses: actions/download-artifact@v8
         with:
           name: CodexUsageDashboard-windows-x64
@@ -70,9 +62,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          archive="./release/CodexUsageDashboard-windows-x64.zip"
+          executable="./release/CodexUsageDashboard.exe"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$archive" --clobber
+            gh release upload "$tag" "$executable" --clobber
           else
-            gh release create "$tag" "$archive" --generate-notes --title "Codex Usage Dashboard $tag"
+            gh release create "$tag" "$executable" --generate-notes --title "Codex Usage Dashboard $tag"
           fi
