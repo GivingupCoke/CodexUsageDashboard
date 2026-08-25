@@ -123,7 +123,22 @@ def test_quota_lines_show_both_plus_windows():
     )
     report._weekly_rate_limit_observed_at = datetime(2026, 8, 24, tzinfo=BEIJING)
 
-    assert [line[0] for line in dashboard._quota_lines(report)] == ["总额度（全局）", "5 小时额度（全局）"]
+    assert [line[0] for line in dashboard._quota_lines(report)] == ["5 小时额度（全局）", "一周额度（全局）"]
+
+
+def test_quota_lines_do_not_treat_a_five_hour_primary_window_as_weekly():
+    report = UsageReport(
+        weekly_used_percent=24,
+        weekly_reset_at=datetime(2026, 8, 25, 1, tzinfo=BEIJING),
+        five_hour_used_percent=24,
+        five_hour_reset_at=datetime(2026, 8, 25, 1, tzinfo=BEIJING),
+        rate_limit_window_minutes=300,
+    )
+
+    five_hour, weekly = dashboard._quota_lines(report)
+
+    assert five_hour[1] == 24
+    assert weekly[1] is None
 
 
 def test_model_options_are_unique_and_sorted_by_total_usage():

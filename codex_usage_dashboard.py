@@ -201,21 +201,14 @@ def _rate_limit_label(window_minutes: int | None) -> str:
 
 
 def _quota_lines(report: UsageReport) -> list[tuple[str, float | None, datetime | None]]:
-    """Return the preserved total quota plus an optional Plus 5-hour window."""
-    lines: list[tuple[str, float | None, datetime | None]] = [
-        ("总额度（全局）", report.weekly_used_percent, report.weekly_reset_at)
+    """Return the two account-global Codex quota windows explicitly."""
+    has_weekly_window = report._weekly_rate_limit_observed_at is not None or report.rate_limit_window_minutes == 10_080
+    weekly_used_percent = report.weekly_used_percent if has_weekly_window else None
+    weekly_reset_at = report.weekly_reset_at if has_weekly_window else None
+    return [
+        ("5 小时额度（全局）", report.five_hour_used_percent, report.five_hour_reset_at),
+        ("一周额度（全局）", weekly_used_percent, weekly_reset_at),
     ]
-
-    # ``weekly_*`` is the historical single-window API. When a weekly window
-    # is present, the old total-quota row uses that overall allowance and the
-    # 5-hour window is shown as an additional row. With a 5-hour-only legacy
-    # record, the old row already represents that same primary window.
-    has_separate_five_hour_window = report.five_hour_used_percent is not None and (
-        report._weekly_rate_limit_observed_at is not None or report.rate_limit_window_minutes != 300
-    )
-    if has_separate_five_hour_window:
-        lines.append(("5 小时额度（全局）", report.five_hour_used_percent, report.five_hour_reset_at))
-    return lines
 
 
 def _quota_bar(used_percent: float | None) -> str:
@@ -268,7 +261,8 @@ class UsageDashboard(tk.Tk):
             "输入 Token：读取中…",
             "输出 Token：读取中…",
             "缓存率：读取中…",
-            "总额度：读取中…",
+            "5 小时额度：读取中…",
+            "一周额度：读取中…",
             "未计价：读取中…",
         ]
         self._tray_status = "\n".join(self._tray_status_lines)
