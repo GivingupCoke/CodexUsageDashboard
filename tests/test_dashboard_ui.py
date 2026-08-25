@@ -80,6 +80,19 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         assert "日志警告：2 条记录" in summary
         assert str(current.weekly_used_percent) in summary
         assert str(dashboard.PRICE_CHECKED_ON.year) in summary
+        assert tuple(root.model_filter.cget("values")) == (
+            dashboard.ALL_MODELS_LABEL,
+            "gpt-5.6-sol",
+            "stealth/ox-alpha",
+        )
+
+        root.model_var.set("stealth/ox-alpha")
+        root._on_model_selected()
+        summary = root.summary.get("1.0", "end")
+        assert "今日模型 Token" in summary
+        assert "55" in summary
+        assert "$0.0000*" in summary
+        assert "周额度（全局）" in summary
 
         root.toggle_collapsed()
         assert root._collapsed is True
@@ -96,6 +109,18 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         pump_until(root, lambda: len(history_window.table.get_children()) == 8)
         assert len(history_window.chart_frame.winfo_children()) == 1
         assert str(history_window.table.cget("style")) == "History.Treeview"
+        assert tuple(history_window.model_filter.cget("values")) == (
+            dashboard.ALL_MODELS_LABEL,
+            "gpt-5.6-sol",
+            "stealth/ox-alpha",
+        )
+
+        history_window.model_var.set("stealth/ox-alpha")
+        history_window._on_model_selected()
+        filtered_rows = history_window.table.get_children()
+        filtered_total = history_window.table.item(filtered_rows[0], "values")
+        assert filtered_total[1] == "55"
+        assert filtered_total[-1] == "$0.0000*"
 
         root.open_history()
         assert root._history_window is history_window
