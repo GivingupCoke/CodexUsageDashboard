@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 
 from usage_core import (
     BEIJING,
+    ModelUsage,
     PRICE_CHECKED_ON,
     UsageReport,
     collect_history,
@@ -59,6 +61,7 @@ SW_HIDE = 0
 SW_SHOW = 5
 SW_RESTORE = 9
 ERROR_ALREADY_EXISTS = 183
+ALL_MODELS_LABEL = "全部模型"
 
 _instance_mutex_handle: int | None = None
 
@@ -159,6 +162,34 @@ def tick_positions(count: int, max_ticks: int = 7) -> list[int]:
     return positions[-max_ticks:]
 
 
+def model_options(reports: Iterable[UsageReport]) -> tuple[str, ...]:
+    totals: dict[str, int] = {}
+    for report in reports:
+        for model, usage in report.by_model.items():
+            totals[model] = totals.get(model, 0) + usage.total_tokens
+    ordered = sorted(totals, key=lambda model: (-totals[model], model.casefold()))
+    return (ALL_MODELS_LABEL, *ordered)
+
+
+def usage_for_model(report: UsageReport, model: str) -> ModelUsage:
+    if model == ALL_MODELS_LABEL:
+        return report
+    return report.by_model.get(model, ModelUsage())
+
+
+def _cost_for_model(report: UsageReport, model: str) -> float:
+    if model == ALL_MODELS_LABEL:
+        return report.cost_usd
+    return usage_for_model(report, model).estimated_cost_usd
+
+
+def _unpriced_models_for_selection(report: UsageReport, model: str) -> tuple[str, ...]:
+    if model == ALL_MODELS_LABEL:
+        return report.unpriced_models
+    usage = usage_for_model(report, model)
+    return (model,) if usage.total_tokens and model in report.unpriced_models else ()
+
+
 def _rate_limit_label(window_minutes: int | None) -> str:
     if window_minutes == 10_080:
         return "周额度"
@@ -194,6 +225,7 @@ class UsageDashboard(tk.Tk):
         self.overrideredirect(True)
         self.sessions_root = Path.home() / ".codex" / "sessions"
         self._topmost = tk.BooleanVar(value=True)
+        self.model_var = tk.StringVar(value=ALL_MODELS_LABEL)
         self._collapsed = False
         self._maximized = False
         self._expanded_geometry = "430x420"
@@ -389,15 +421,42 @@ class UsageDashboard(tk.Tk):
             padding=(11, 6),
         )
         style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", BORDER)])
+        style.configure(
+            "Filter.TCombobox",
+            fieldbackground=CARD,
+            background=CARD,
+            foreground=TEXT,
+            arrowcolor=MUTED,
+            bordercolor=BORDER,
+            lightcolor=CARD,
+            darkcolor=CARD,
+            padding=(7, 3),
+        )
+        style.map(
+            "Filter.TCombobox",
+            fieldbackground=[("readonly", CARD)],
+            foreground=[("readonly", TEXT)],
+            selectbackground=[("readonly", CARD)],
+            selectforeground=[("readonly", TEXT)],
+        )
 
         self._build_titlebar()
         self.content = ttk.Frame(self, style="Panel.TFrame", padding=(16, 12, 16, 14))
         self.content.pack(fill="both", expand=True)
         meta = ttk.Frame(self.content, style="Panel.TFrame")
         meta.pack(fill="x", pady=(0, 8))
-        ttk.Label(meta, text="TODAY", style="Muted.TLabel").pack(side="left")
         self.connection_label = ttk.Label(meta, text="北京时间 · 本地日志", style="Muted.TLabel")
-        self.connection_label.pack(side="right")
+        self.connection_label.pack(side="left")
+        self.model_filter = ttk.Combobox(
+            meta,
+            textvariable=self.model_var,
+            values=(ALL_MODELS_LABEL,),
+            state="readonly",
+            width=18,
+            style="Filter.TCombobox",
+        )
+        self.model_filter.pack(side="right")
+        self.model_filter.bind("<<ComboboxSelected>>", self._on_model_selected)
         self.body = ttk.Frame(self.content, style="Panel.TFrame")
         self.body.pack(fill="both", expand=True)
         self.summary = tk.Text(
@@ -821,6 +880,7 @@ class UsageDashboard(tk.Tk):
         report = result.value
         if isinstance(report, UsageReport):
             self._last_report = report
+            self._sync_model_options(report)
             self._update_tray_status(report)
             self._render_summary(report)
 
@@ -830,13 +890,28 @@ class UsageDashboard(tk.Tk):
         self.summary.insert("1.0", text)
         self.summary.configure(state="disabled")
 
+    def _sync_model_options(self, report: UsageReport) -> None:
+        options = model_options((report,))
+        self.model_filter.configure(values=options)
+        if self.model_var.get() not in options:
+            self.model_var.set(ALL_MODELS_LABEL)
+
+    def _on_model_selected(self, _event=None) -> None:
+        if self._last_report is not None:
+            self._render_summary(self._last_report)
+
     def _render_summary(self, report: UsageReport) -> None:
         now = datetime.now(BEIJING)
-        cache_rate = f"{report.cache_rate:.1%}"
-        limit_label = _rate_limit_label(report.rate_limit_window_minutes)
+        selected_model = self.model_var.get()
+        usage = usage_for_model(report, selected_model)
+        cache_rate_value = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
+        cache_rate = f"{cache_rate_value:.1%}"
+        limit_label = f"{_rate_limit_label(report.rate_limit_window_minutes)}（全局）"
         weekly = "未知" if report.weekly_used_percent is None else f"{report.weekly_used_percent:.0f}%"
         reset = report.weekly_reset_at.strftime("%m-%d %H:%M") if report.weekly_reset_at else "未知"
-        cost_suffix = "*" if report.cost_is_partial else ""
+        unpriced_models = _unpriced_models_for_selection(report, selected_model)
+        cost_suffix = "*" if unpriced_models else ""
+        token_label = "今日总 Token" if selected_model == ALL_MODELS_LABEL else "今日模型 Token"
         if report.weekly_used_percent is None:
             quota_bar = "░" * 10
         else:
@@ -845,21 +920,21 @@ class UsageDashboard(tk.Tk):
         self.summary.configure(state="normal")
         self.summary.delete("1.0", tk.END)
         self.summary.insert(tk.END, f"更新于 {now:%H:%M:%S}  ·  {now:%Y-%m-%d}\n", "label")
-        self.summary.insert(tk.END, "\n今日总 Token\tAPI 参考估算\n", "label")
-        self.summary.insert(tk.END, format_tokens(report.total_tokens), "hero")
+        self.summary.insert(tk.END, f"\n{token_label}\tAPI 参考估算\n", "label")
+        self.summary.insert(tk.END, format_tokens(usage.total_tokens), "hero")
         self.summary.insert(tk.END, "\t")
-        self.summary.insert(tk.END, f"${report.cost_usd:,.4f}{cost_suffix}\n", "hero_cost")
+        self.summary.insert(tk.END, f"${_cost_for_model(report, selected_model):,.4f}{cost_suffix}\n", "hero_cost")
         self.summary.insert(tk.END, "────────────────────────────────────\n", "divider")
         self.summary.insert(tk.END, "输入 Token\t缓存输入 Token\n", "label")
         self.summary.insert(
             tk.END,
-            f"{format_tokens(report.input_tokens)}\t{format_tokens(report.cached_input_tokens)}\n",
+            f"{format_tokens(usage.input_tokens)}\t{format_tokens(usage.cached_input_tokens)}\n",
             "value",
         )
         self.summary.insert(tk.END, "\n输出 Token\t缓存率\n", "label")
         self.summary.insert(
             tk.END,
-            f"{format_tokens(report.output_tokens)}\t{cache_rate}\n",
+            f"{format_tokens(usage.output_tokens)}\t{cache_rate}\n",
             "value",
         )
         self.summary.insert(tk.END, f"\n{limit_label}   {quota_bar}  {weekly}\n", "accent")
@@ -869,8 +944,8 @@ class UsageDashboard(tk.Tk):
             f"扫描 {report.files_with_usage}/{report.sessions_scanned} 个会话  ·  价格核对 {PRICE_CHECKED_ON:%Y-%m-%d}\n",
             "label",
         )
-        if report.cost_is_partial:
-            self.summary.insert(tk.END, f"* 未计价模型：{', '.join(report.unpriced_models)}\n", "error")
+        if unpriced_models:
+            self.summary.insert(tk.END, f"* 未计价模型：{', '.join(unpriced_models)}\n", "error")
         if report.parse_errors:
             self.summary.insert(tk.END, f"日志警告：{report.parse_errors} 条记录未能解析\n", "error")
         self.summary.configure(state="disabled")
@@ -897,6 +972,8 @@ class HistoryWindow(tk.Toplevel):
         self.current = current
         self.queue = LatestResultQueue()
         self.days_var = tk.StringVar(value="最近 7 天")
+        self.model_var = tk.StringVar(value=ALL_MODELS_LABEL)
+        self._reports: list[UsageReport] = []
         self._poll_after: str | None = None
         self._figure: Any | None = None
         self._build_ui()
@@ -971,6 +1048,16 @@ class HistoryWindow(tk.Toplevel):
         )
         period.pack(side="right")
         period.bind("<<ComboboxSelected>>", lambda _event: self.load_history())
+        self.model_filter = ttk.Combobox(
+            top,
+            textvariable=self.model_var,
+            values=(ALL_MODELS_LABEL,),
+            state="readonly",
+            width=18,
+            style="History.TCombobox",
+        )
+        self.model_filter.pack(side="right", padx=(0, 8))
+        self.model_filter.bind("<<ComboboxSelected>>", self._on_model_selected)
         self.chart_frame = ttk.Frame(self, style="HistorySurface.TFrame", padding=1)
         self.chart_frame.pack(fill="both", expand=True, padx=16)
         columns = ("date", "total", "input", "cached", "output", "rate", "cost")
@@ -1057,6 +1144,11 @@ class HistoryWindow(tk.Toplevel):
             return
         reports = result.value
         if isinstance(reports, list):
+            self._reports = reports
+            options = model_options(reports)
+            self.model_filter.configure(values=options)
+            if self.model_var.get() not in options:
+                self.model_var.set(ALL_MODELS_LABEL)
             self._render_history(reports)
 
     def _clear_chart(self) -> None:
@@ -1066,8 +1158,14 @@ class HistoryWindow(tk.Toplevel):
         for child in self.chart_frame.winfo_children():
             child.destroy()
 
+    def _on_model_selected(self, _event=None) -> None:
+        if self._reports:
+            self._render_history(self._reports)
+
     def _render_history(self, reports: list[UsageReport]) -> None:
         self._clear_chart()
+        selected_model = self.model_var.get()
+        usages = [usage_for_model(report, selected_model) for report in reports]
         try:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
@@ -1076,8 +1174,8 @@ class HistoryWindow(tk.Toplevel):
             self._figure = fig
             ax = fig.add_subplot(111, facecolor=PANEL)
             labels = [report.day.strftime("%m-%d") for report in reports]
-            costs = [report.cost_usd for report in reports]
-            tokens = [report.total_tokens / 1_000_000 for report in reports]
+            costs = [_cost_for_model(report, selected_model) for report in reports]
+            tokens = [usage.total_tokens / 1_000_000 for usage in usages]
             x_values = list(range(len(reports)))
             ax.bar(x_values, costs, color="#343b4c", alpha=0.95, width=0.72)
             ax.set_ylabel("USD", color=SUBTLE)
@@ -1111,13 +1209,13 @@ class HistoryWindow(tk.Toplevel):
 
         for item in self.table.get_children():
             self.table.delete(item)
-        total_input = sum(report.input_tokens for report in reports)
-        total_cached = sum(report.cached_input_tokens for report in reports)
-        total_output = sum(report.output_tokens for report in reports)
-        total_tokens = sum(report.total_tokens for report in reports)
-        total_cost = sum(report.cost_usd for report in reports)
+        total_input = sum(usage.input_tokens for usage in usages)
+        total_cached = sum(usage.cached_input_tokens for usage in usages)
+        total_output = sum(usage.output_tokens for usage in usages)
+        total_tokens = sum(usage.total_tokens for usage in usages)
+        total_cost = sum(_cost_for_model(report, selected_model) for report in reports)
         total_rate = total_cached / total_input if total_input else 0.0
-        partial = any(report.cost_is_partial for report in reports)
+        partial = any(_unpriced_models_for_selection(report, selected_model) for report in reports)
         suffix = "*" if partial else ""
         self.table.insert(
             "",
@@ -1133,18 +1231,20 @@ class HistoryWindow(tk.Toplevel):
             ),
             tags=("total",),
         )
-        for index, report in enumerate(reversed(reports)):
+        for index, (report, usage) in enumerate(reversed(list(zip(reports, usages, strict=True)))):
+            cache_rate = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
+            partial = bool(_unpriced_models_for_selection(report, selected_model))
             self.table.insert(
                 "",
                 "end",
                 values=(
                     report.day.strftime("%Y-%m-%d"),
-                    format_tokens(report.total_tokens),
-                    format_tokens(report.input_tokens),
-                    format_tokens(report.cached_input_tokens),
-                    format_tokens(report.output_tokens),
-                    f"{report.cache_rate:.1%}",
-                    f"${report.cost_usd:,.4f}{'*' if report.cost_is_partial else ''}",
+                    format_tokens(usage.total_tokens),
+                    format_tokens(usage.input_tokens),
+                    format_tokens(usage.cached_input_tokens),
+                    format_tokens(usage.output_tokens),
+                    f"{cache_rate:.1%}",
+                    f"${_cost_for_model(report, selected_model):,.4f}{'*' if partial else ''}",
                 ),
                 tags=("even",) if index % 2 else (),
             )
