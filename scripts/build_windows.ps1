@@ -27,6 +27,8 @@ try {
         --onefile `
         --windowed `
         --name CodexUsageDashboard `
+        --icon (Join-Path $projectRoot "assets\codex_usage_dashboard.ico") `
+        --add-data "$(Join-Path $projectRoot 'assets');assets" `
         --distpath dist `
         --workpath build/pyinstaller `
         --specpath build `

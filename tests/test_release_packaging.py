@@ -17,6 +17,14 @@ def test_windows_release_build_is_reproducible():
     assert "--onefile" in build_script
     assert "--windowed" in build_script
     assert "CodexUsageDashboard" in build_script
+    assert '--icon (Join-Path $projectRoot "assets\\codex_usage_dashboard.ico")' in build_script
+    assert "--add-data \"$(Join-Path $projectRoot 'assets');assets\"" in build_script
+    assert (ROOT / "assets/codex_usage_dashboard.ico").is_file()
+    assert (ROOT / "assets/codex_usage_dashboard.png").is_file()
+
+    dashboard_source = (ROOT / "codex_usage_dashboard.py").read_text(encoding="utf-8")
+    assert "self.iconbitmap(default=str(ico_path))" in dashboard_source
+    assert 'if sys.platform == "win32":\n                    return' in dashboard_source
 
     assert "windows-latest" in workflow
     assert "actions/checkout@v6" in workflow

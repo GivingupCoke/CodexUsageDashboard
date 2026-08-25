@@ -40,6 +40,10 @@ DISPLAY_FONT = "Segoe UI Variable Display"
 APP_NAME = "Codex Usage"
 APP_VERSION = "1.0"
 APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION}"
+APP_ICON_ICO = Path("assets") / "codex_usage_dashboard.ico"
+APP_ICON_PNG = Path("assets") / "codex_usage_dashboard.png"
+CAPTION_HOVER_BG = "#29344a"
+WINDOWS_APP_USER_MODEL_ID = "LiHua.CodexUsageDashboard"
 PIN_ICON = "\ue718"
 COLLAPSE_ICON = "\ue70e"
 EXPAND_ICON = "\ue70d"
@@ -47,6 +51,12 @@ MINIMIZE_ICON = "\ue921"
 MAXIMIZE_ICON = "\ue922"
 RESTORE_ICON = "\ue923"
 CLOSE_ICON = "\ue8bb"
+
+
+def _resource_path(relative_path: str | Path) -> Path:
+    """Resolve an asset both from source checkout and a PyInstaller bundle."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / relative_path
 
 
 @dataclass(frozen=True)
@@ -120,10 +130,12 @@ def _set_native_titlebar_dark(window: tk.Misc) -> None:
 class UsageDashboard(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._set_windows_app_identity()
         self.title(f"{APP_DISPLAY_NAME} · 今日用量")
         self.geometry("430x420")
         self.minsize(380, 400)
         self.configure(bg=BG)
+        self._set_app_icon()
         self.attributes("-topmost", True)
         self.overrideredirect(True)
         self.sessions_root = Path.home() / ".codex" / "sessions"
@@ -140,10 +152,46 @@ class UsageDashboard(tk.Tk):
         self._refresh_running = False
         self._refresh_poll_after: str | None = None
         self._build_ui()
+        self._apply_windows_window_style()
         self.after_idle(self._apply_windows_window_style)
+        self.after(150, self._apply_windows_window_style)
         self._set_summary("正在读取今日日志…")
         self.refresh()
         self.after(60_000, self._scheduled_refresh)
+
+    @staticmethod
+    def _set_windows_app_identity() -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+            set_app_id.argtypes = [ctypes.c_wchar_p]
+            set_app_id.restype = ctypes.c_long
+            set_app_id(WINDOWS_APP_USER_MODEL_ID)
+        except (AttributeError, OSError):
+            return
+
+    def _set_app_icon(self) -> None:
+        ico_path = _resource_path(APP_ICON_ICO)
+        png_path = _resource_path(APP_ICON_PNG)
+        try:
+            if ico_path.exists():
+                self.iconbitmap(default=str(ico_path))
+                # Keep the Windows taskbar/window icon sourced from the same
+                # ICO that PyInstaller embeds as the EXE file icon.  Calling
+                # iconphoto afterwards would replace it with the PNG source.
+                if sys.platform == "win32":
+                    return
+        except tk.TclError:
+            pass
+        try:
+            if png_path.exists():
+                self._app_icon_image = tk.PhotoImage(file=str(png_path))
+                self.iconphoto(True, self._app_icon_image)
+        except tk.TclError:
+            pass
 
     def _build_ui(self) -> None:
         style = ttk.Style(self)
@@ -294,7 +342,7 @@ class UsageDashboard(tk.Tk):
         command,
         *,
         width: int = 5,
-        hover_bg: str = PANEL,
+        hover_bg: str = CAPTION_HOVER_BG,
     ) -> tk.Button:
         button = tk.Button(
             parent,
@@ -309,9 +357,11 @@ class UsageDashboard(tk.Tk):
             activeforeground="#ffffff",
             font=(ICON_FONT, 10),
             cursor="hand2",
+            highlightthickness=0,
             takefocus=True,
         )
         button.bind("<Enter>", lambda _event: button.configure(bg=hover_bg))
+        button.bind("<Motion>", lambda _event: button.configure(bg=hover_bg))
         button.bind("<Leave>", lambda _event: self._reset_caption_button(button))
         return button
 
@@ -361,7 +411,12 @@ class UsageDashboard(tk.Tk):
 
             user32 = ctypes.windll.user32
             inner_handle = self.winfo_id()
-            handle = user32.GetParent(inner_handle) or inner_handle
+            handle = (
+                user32.FindWindowW(None, self.title())
+                or user32.GetAncestor(inner_handle, 2)
+                or user32.GetParent(inner_handle)
+                or inner_handle
+            )
             self._window_handle = handle
             get_window_long = user32.GetWindowLongPtrW
             set_window_long = user32.SetWindowLongPtrW
@@ -371,6 +426,9 @@ class UsageDashboard(tk.Tk):
             ex_style = get_window_long(handle, -20)
             ex_style = (ex_style & ~0x00000080) | 0x00040000
             set_window_long(handle, -20, ex_style)
+            # A borderless Tk window may retain an owner and then disappear
+            # from the taskbar. Make the root a normal app window explicitly.
+            user32.SetWindowLongPtrW(handle, -8, 0)
             user32.SetWindowPos(handle, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
             try:
                 corner_preference = ctypes.c_int(2)

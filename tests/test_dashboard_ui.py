@@ -172,6 +172,13 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root.pin_button.invoke()
         assert root._topmost.get() is True
 
+        assert root.minimize_button.bind("<Enter>")
+        assert root.minimize_button.bind("<Motion>")
+        assert root.minimize_button.cget("activebackground") == dashboard.CAPTION_HOVER_BG
+        assert root.maximize_button.bind("<Enter>")
+        assert root.maximize_button.bind("<Motion>")
+        assert root.maximize_button.cget("activebackground") == dashboard.CAPTION_HOVER_BG
+
         summary = root.summary.get("1.0", "end")
         assert "今日总 Token" in summary
         assert "API 参考估算" in summary
