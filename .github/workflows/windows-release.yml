@@ -67,6 +67,7 @@ jobs:
       - name: Publish tagged GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF_NAME}"
           archive="./release/CodexUsageDashboard-windows-x64.zip"
