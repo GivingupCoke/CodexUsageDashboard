@@ -94,7 +94,7 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         assert "今日模型 Token" in summary
         assert "55" in summary
         assert "$0.0000*" in summary
-        assert "周额度（全局）" in summary
+        assert "总额度（全局）" in summary
 
         root.model_var.set("gpt-5.6-sol")
         root._on_model_selected()
@@ -107,7 +107,7 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         root._render_summary(dual_quota)
         dual_summary = root.summary.get("1.0", "end")
         assert "5 小时额度（全局）" in dual_summary
-        assert "周额度（全局）" in dual_summary
+        assert "总额度（全局）" in dual_summary
 
         root.model_var.set("stealth/ox-alpha")
         root._sync_model_options(make_report())
@@ -260,7 +260,7 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert "输入 Token" in root._tray_status
         assert "输出 Token" in root._tray_status
         assert "缓存率" in root._tray_status
-        assert "周额度" in root._tray_status
+        assert "总额度" in root._tray_status
         assert "未计价：stealth/ox-alpha" in root._tray_status
         assert len(root._tray_status_lines) == 7
 
@@ -280,7 +280,7 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         summary = root.summary.get("1.0", "end")
         assert "今日总 Token" in summary
         assert "API 参考估算" in summary
-        assert "周额度" in summary
+        assert "总额度" in summary
         assert "█" in summary
 
         assert root._maximized is False

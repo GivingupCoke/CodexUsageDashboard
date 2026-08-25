@@ -123,7 +123,7 @@ def test_quota_lines_show_both_plus_windows():
     )
     report._weekly_rate_limit_observed_at = datetime(2026, 8, 24, tzinfo=BEIJING)
 
-    assert [line[0] for line in dashboard._quota_lines(report)] == ["5 小时额度（全局）", "周额度（全局）"]
+    assert [line[0] for line in dashboard._quota_lines(report)] == ["总额度（全局）", "5 小时额度（全局）"]
 
 
 def test_model_options_are_unique_and_sorted_by_total_usage():
