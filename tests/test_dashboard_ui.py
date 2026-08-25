@@ -167,6 +167,10 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.pin_button.master is root.caption_controls
         assert root.pin_button.cget("text") == dashboard.PIN_ICON
         assert root.pin_button.cget("bg") == dashboard.ACCENT
+        assert root.history_button.cget("text") == "历史记录"
+        assert root.refresh_button.cget("text") == "刷新"
+        assert root.history_button.cget("fg") == dashboard.TEXT
+        assert root.refresh_button.cget("fg") == "#ffffff"
 
         root.pin_button.invoke()
         assert root._topmost.get() is False

@@ -260,8 +260,43 @@ class UsageDashboard(tk.Tk):
         self.summary.bind("<KeyPress>", self._block_summary_edits)
         controls = ttk.Frame(self.body, style="Panel.TFrame")
         controls.pack(fill="x", pady=(10, 0))
-        ttk.Button(controls, text="历史记录", command=self.open_history, style="Secondary.TButton").pack(side="left")
-        self.refresh_button = ttk.Button(controls, text="刷新", command=self.refresh, style="Accent.TButton")
+        self.history_button = tk.Button(
+            controls,
+            text="历史记录",
+            command=self.open_history,
+            bg=CARD,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            disabledforeground=SUBTLE,
+            font=(UI_FONT, 9),
+            relief="flat",
+            bd=0,
+            padx=11,
+            pady=4,
+            highlightthickness=0,
+            takefocus=False,
+            cursor="hand2",
+        )
+        self.history_button.pack(side="left")
+        self.refresh_button = tk.Button(
+            controls,
+            text="刷新",
+            command=self.refresh,
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground=ACCENT_HOVER,
+            activeforeground="#ffffff",
+            disabledforeground="#d8dcff",
+            font=(UI_FONT, 9, "bold"),
+            relief="flat",
+            bd=0,
+            padx=11,
+            pady=4,
+            highlightthickness=0,
+            takefocus=False,
+            cursor="hand2",
+        )
         self.refresh_button.pack(side="left", padx=(8, 0))
         ttk.Label(controls, text="每 60 秒自动更新", style="Muted.TLabel").pack(side="right")
         self.summary.tag_configure("eyebrow", foreground=ACCENT, font=(UI_FONT, 9, "bold"))
