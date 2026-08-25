@@ -14,7 +14,8 @@ def create_dashboard():
         try:
             return dashboard.UsageDashboard()
         except tk.TclError as exc:
-            if attempt or "Can't find a usable tk.tcl" not in str(exc):
+            transient_errors = ("Can't find a usable tk.tcl", 'invalid command name "tcl_findLibrary"')
+            if attempt or not any(message in str(exc) for message in transient_errors):
                 raise
             time.sleep(0.05)
     raise AssertionError("unreachable")
@@ -94,6 +95,19 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         assert "$0.0000*" in summary
         assert "周额度（全局）" in summary
 
+        root.model_var.set("gpt-5.6-sol")
+        root._on_model_selected()
+        assert "$0.0040" in root.summary.get("1.0", "end")
+
+        root.model_var.set("stealth/ox-alpha")
+        root._sync_model_options(make_report())
+        assert root.model_var.get() == dashboard.ALL_MODELS_LABEL
+
+        no_quota = make_report()
+        no_quota.weekly_used_percent = None
+        root._render_summary(no_quota)
+        assert "░░░░░░░░░░" in root.summary.get("1.0", "end")
+
         root.toggle_collapsed()
         assert root._collapsed is True
         root.toggle_collapsed()
@@ -121,6 +135,12 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         filtered_total = history_window.table.item(filtered_rows[0], "values")
         assert filtered_total[1] == "55"
         assert filtered_total[-1] == "$0.0000*"
+
+        history_window.model_var.set("removed-model")
+        request_id = history_window.queue.begin()
+        history_window.queue.put(dashboard.WorkerResult(request_id, [make_report()], None))
+        history_window._poll_result()
+        assert history_window.model_var.get() == dashboard.ALL_MODELS_LABEL
 
         root.open_history()
         assert root._history_window is history_window
