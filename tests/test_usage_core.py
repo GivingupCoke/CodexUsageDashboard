@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -261,6 +262,41 @@ def test_plus_rate_limits_keep_five_hour_and_weekly_windows(tmp_path: Path):
     assert result.five_hour_reset_at is not None
     assert result.weekly_used_percent == 62
     assert result.weekly_reset_at is not None
+
+
+def test_collect_usage_keeps_latest_global_quotas_when_today_has_no_log(tmp_path: Path):
+    session = write_session(
+        tmp_path,
+        [
+            event("2026-08-24T00:00:00Z", "turn_context", {"model": "gpt-5.6-sol"}),
+            token_event(
+                "2026-08-24T00:00:01Z",
+                100,
+                50,
+                10,
+                rate_limits={
+                    "primary": {
+                        "used_percent": 11,
+                        "window_minutes": 300,
+                        "resets_at": 1_777_000_000,
+                    },
+                    "secondary": {
+                        "used_percent": 72,
+                        "window_minutes": 10_080,
+                        "resets_at": 1_777_600_000,
+                    },
+                },
+            ),
+        ],
+    )
+    old_mtime = datetime(2026, 8, 25, 12, tzinfo=timezone.utc).timestamp()
+    os.utime(session, (old_mtime, old_mtime))
+
+    result = collect_usage(tmp_path, date(2026, 8, 26))
+
+    assert result.sessions_scanned == 0
+    assert result.weekly_used_percent == 72
+    assert result.five_hour_used_percent == 11
 
 
 def test_history_parse_errors_are_not_multiplied_across_days(tmp_path: Path):

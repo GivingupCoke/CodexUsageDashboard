@@ -394,12 +394,7 @@ def _load_session(path: Path, stat: object) -> _SessionCacheEntry:
     return entry
 
 
-def _merge_day(report: UsageReport, summary: _DaySummary) -> None:
-    report.parse_errors += summary.parse_errors
-    if summary.touched:
-        report.files_with_usage += 1
-    for model, source in summary.by_model.items():
-        report.by_model.setdefault(model, ModelUsage()).merge(source)
+def _merge_rate_limits(report: UsageReport, summary: _DaySummary) -> None:
     if summary.rate_limit_observed_at is not None and (
         report._rate_limit_observed_at is None or summary.rate_limit_observed_at >= report._rate_limit_observed_at
     ):
@@ -421,6 +416,26 @@ def _merge_day(report: UsageReport, summary: _DaySummary) -> None:
         report.five_hour_used_percent = summary.five_hour_used_percent
         report.five_hour_reset_at = summary.five_hour_reset_at
         report._five_hour_rate_limit_observed_at = summary.five_hour_observed_at
+
+
+def _merge_day(report: UsageReport, summary: _DaySummary) -> None:
+    report.parse_errors += summary.parse_errors
+    if summary.touched:
+        report.files_with_usage += 1
+    for model, source in summary.by_model.items():
+        report.by_model.setdefault(model, ModelUsage()).merge(source)
+    _merge_rate_limits(report, summary)
+
+
+def _has_rate_limits(report: UsageReport) -> bool:
+    return any(
+        marker is not None
+        for marker in (
+            report._rate_limit_observed_at,
+            report._weekly_rate_limit_observed_at,
+            report._five_hour_rate_limit_observed_at,
+        )
+    )
 
 
 def _collect_range(sessions_root: str | Path, first_day: date, last_day: date) -> dict[date, UsageReport]:
@@ -445,6 +460,20 @@ def _collect_range(sessions_root: str | Path, first_day: date, last_day: date) -
                 summary = entry.days.get(day)
                 if summary is not None:
                     _merge_day(report, summary)
+
+        # Quota data is account-global and can remain valid after midnight,
+        # while today's Token total must stay limited to today's files. If no
+        # current-day file supplied a quota snapshot, use the latest snapshot
+        # found in the complete local log history without merging old usage.
+        if not any(_has_rate_limits(report) for report in reports.values()):
+            all_paths = _session_files(Path(sessions_root), datetime(1970, 1, 1, tzinfo=UTC))
+            for path, stat in all_paths:
+                try:
+                    entry = _load_session(path, stat)
+                except OSError:
+                    continue
+                for summary in entry.days.values():
+                    _merge_rate_limits(reports[first_day], summary)
 
     for report in reports.values():
         for usage in report.by_model.values():
