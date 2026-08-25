@@ -100,6 +100,15 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         root._on_model_selected()
         assert "$0.0040" in root.summary.get("1.0", "end")
 
+        dual_quota = make_report()
+        dual_quota.five_hour_used_percent = 24
+        dual_quota.five_hour_reset_at = datetime.now(BEIJING) + timedelta(hours=2)
+        dual_quota._weekly_rate_limit_observed_at = datetime.now(BEIJING)
+        root._render_summary(dual_quota)
+        dual_summary = root.summary.get("1.0", "end")
+        assert "5 小时额度（全局）" in dual_summary
+        assert "周额度（全局）" in dual_summary
+
         root.model_var.set("stealth/ox-alpha")
         root._sync_model_options(make_report())
         assert root.model_var.get() == dashboard.ALL_MODELS_LABEL

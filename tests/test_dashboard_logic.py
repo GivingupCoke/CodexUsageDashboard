@@ -1,5 +1,5 @@
 import queue
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import codex_usage_dashboard as dashboard
@@ -12,7 +12,7 @@ from codex_usage_dashboard import (
     usage_for_model,
     tick_positions,
 )
-from usage_core import ModelUsage, UsageReport
+from usage_core import BEIJING, ModelUsage, UsageReport
 
 
 def test_latest_result_queue_discards_stale_results():
@@ -111,6 +111,19 @@ def test_rate_limit_labels_cover_weekly_hourly_and_generic_windows():
     assert dashboard._rate_limit_label(10_080) == "周额度"
     assert dashboard._rate_limit_label(300) == "5 小时额度"
     assert dashboard._rate_limit_label(90) == "额度"
+
+
+def test_quota_lines_show_both_plus_windows():
+    report = UsageReport(
+        weekly_used_percent=61,
+        weekly_reset_at=datetime(2026, 8, 31, tzinfo=BEIJING),
+        five_hour_used_percent=24,
+        five_hour_reset_at=datetime(2026, 8, 25, 1, tzinfo=BEIJING),
+        rate_limit_window_minutes=300,
+    )
+    report._weekly_rate_limit_observed_at = datetime(2026, 8, 24, tzinfo=BEIJING)
+
+    assert [line[0] for line in dashboard._quota_lines(report)] == ["5 小时额度（全局）", "周额度（全局）"]
 
 
 def test_model_options_are_unique_and_sorted_by_total_usage():

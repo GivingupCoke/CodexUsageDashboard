@@ -110,7 +110,11 @@ class UsageReport(ModelUsage):
     sessions_scanned: int = 0
     files_with_usage: int = 0
     parse_errors: int = 0
+    five_hour_used_percent: float | None = None
+    five_hour_reset_at: datetime | None = None
     _rate_limit_observed_at: datetime | None = field(default=None, repr=False)
+    _weekly_rate_limit_observed_at: datetime | None = field(default=None, repr=False)
+    _five_hour_rate_limit_observed_at: datetime | None = field(default=None, repr=False)
 
     @property
     def cache_rate(self) -> float:
@@ -138,6 +142,10 @@ class _DaySummary:
     weekly_reset_at: datetime | None = None
     rate_limit_window_minutes: int | None = None
     rate_limit_observed_at: datetime | None = None
+    five_hour_used_percent: float | None = None
+    five_hour_reset_at: datetime | None = None
+    five_hour_observed_at: datetime | None = None
+    weekly_observed_at: datetime | None = None
     parse_errors: int = 0
     touched: bool = False
 
@@ -252,25 +260,50 @@ def _parse_rate_limit(
     if not isinstance(rate_limits, dict):
         _record_error(entry, row)
         return
-    primary = rate_limits.get("primary") or {}
-    if not isinstance(primary, dict) or primary.get("used_percent") is None:
-        return
-    try:
-        used_percent = float(primary["used_percent"])
-        window_minutes = int(primary["window_minutes"]) if primary.get("window_minutes") is not None else None
-        reset_at = (
-            datetime.fromtimestamp(int(primary["resets_at"]), tz=UTC).astimezone(BEIJING)
-            if primary.get("resets_at") is not None
-            else None
-        )
-    except (OverflowError, TypeError, ValueError):
-        _record_error(entry, row)
-        return
-    if summary.rate_limit_observed_at is None or observed_at >= summary.rate_limit_observed_at:
-        summary.weekly_used_percent = used_percent
-        summary.rate_limit_window_minutes = window_minutes
-        summary.weekly_reset_at = reset_at
-        summary.rate_limit_observed_at = observed_at
+    for limit_name in ("primary", "secondary"):
+        limit = rate_limits.get(limit_name)
+        if limit is None:
+            continue
+        if not isinstance(limit, dict):
+            _record_error(entry, row)
+            continue
+        if limit.get("used_percent") is None:
+            continue
+        try:
+            used_percent = float(limit["used_percent"])
+            window_minutes = int(limit["window_minutes"]) if limit.get("window_minutes") is not None else None
+            reset_at = (
+                datetime.fromtimestamp(int(limit["resets_at"]), tz=UTC).astimezone(BEIJING)
+                if limit.get("resets_at") is not None
+                else None
+            )
+        except (OverflowError, TypeError, ValueError):
+            _record_error(entry, row)
+            continue
+
+        # Keep the original primary-window fields for compatibility with
+        # callers that used the single-limit representation.
+        if limit_name == "primary" and (
+            summary.rate_limit_observed_at is None or observed_at >= summary.rate_limit_observed_at
+        ):
+            summary.weekly_used_percent = used_percent
+            summary.rate_limit_window_minutes = window_minutes
+            summary.weekly_reset_at = reset_at
+            summary.rate_limit_observed_at = observed_at
+
+        if window_minutes == 10_080 and (
+            summary.weekly_observed_at is None or observed_at >= summary.weekly_observed_at
+        ):
+            summary.weekly_used_percent = used_percent
+            summary.weekly_reset_at = reset_at
+            summary.weekly_observed_at = observed_at
+
+        if window_minutes == 300 and (
+            summary.five_hour_observed_at is None or observed_at >= summary.five_hour_observed_at
+        ):
+            summary.five_hour_used_percent = used_percent
+            summary.five_hour_reset_at = reset_at
+            summary.five_hour_observed_at = observed_at
 
 
 def _process_row(entry: _SessionCacheEntry, row: object) -> None:
@@ -374,6 +407,20 @@ def _merge_day(report: UsageReport, summary: _DaySummary) -> None:
         report.weekly_reset_at = summary.weekly_reset_at
         report.rate_limit_window_minutes = summary.rate_limit_window_minutes
         report._rate_limit_observed_at = summary.rate_limit_observed_at
+    if summary.weekly_observed_at is not None and (
+        report._weekly_rate_limit_observed_at is None
+        or summary.weekly_observed_at >= report._weekly_rate_limit_observed_at
+    ):
+        report.weekly_used_percent = summary.weekly_used_percent
+        report.weekly_reset_at = summary.weekly_reset_at
+        report._weekly_rate_limit_observed_at = summary.weekly_observed_at
+    if summary.five_hour_observed_at is not None and (
+        report._five_hour_rate_limit_observed_at is None
+        or summary.five_hour_observed_at >= report._five_hour_rate_limit_observed_at
+    ):
+        report.five_hour_used_percent = summary.five_hour_used_percent
+        report.five_hour_reset_at = summary.five_hour_reset_at
+        report._five_hour_rate_limit_observed_at = summary.five_hour_observed_at
 
 
 def _collect_range(sessions_root: str | Path, first_day: date, last_day: date) -> dict[date, UsageReport]:

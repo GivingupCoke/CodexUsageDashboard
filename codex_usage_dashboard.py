@@ -200,6 +200,33 @@ def _rate_limit_label(window_minutes: int | None) -> str:
     return "额度"
 
 
+def _quota_lines(report: UsageReport) -> list[tuple[str, float | None, datetime | None]]:
+    """Return the account-global quota windows available in a report."""
+    lines: list[tuple[str, float | None, datetime | None]] = []
+    if report.five_hour_used_percent is not None:
+        lines.append(("5 小时额度（全局）", report.five_hour_used_percent, report.five_hour_reset_at))
+
+    # ``weekly_*`` is the historical single-window API. A report parsed from
+    # current logs has a separate observation marker for the actual weekly
+    # window; the fallback keeps hand-built/legacy reports working.
+    has_weekly_window = report._weekly_rate_limit_observed_at is not None or report.five_hour_used_percent is None
+    if report.weekly_used_percent is not None and has_weekly_window:
+        lines.append(("周额度（全局）", report.weekly_used_percent, report.weekly_reset_at))
+
+    if not lines and report.weekly_used_percent is not None:
+        lines.append((_rate_limit_label(report.rate_limit_window_minutes) + "（全局）", report.weekly_used_percent, report.weekly_reset_at))
+    if not lines:
+        lines.append((_rate_limit_label(report.rate_limit_window_minutes) + "（全局）", None, None))
+    return lines
+
+
+def _quota_bar(used_percent: float | None) -> str:
+    if used_percent is None:
+        return "░" * 10
+    filled = max(0, min(10, round(used_percent / 10)))
+    return "█" * filled + "░" * (10 - filled)
+
+
 def _set_native_titlebar_dark(window: tk.Misc) -> None:
     if sys.platform != "win32" or not window.winfo_exists():
         return
@@ -343,9 +370,6 @@ class UsageDashboard(tk.Tk):
 
     def _update_tray_status(self, report: UsageReport) -> None:
         suffix = "*" if report.cost_is_partial else ""
-        weekly = "未知" if report.weekly_used_percent is None else f"{report.weekly_used_percent:.0f}%"
-        reset = report.weekly_reset_at.strftime("%m-%d %H:%M") if report.weekly_reset_at else "未知"
-        limit_label = _rate_limit_label(report.rate_limit_window_minutes)
         unpriced = ", ".join(report.unpriced_models) if report.cost_is_partial else "无"
         self._tray_status_lines = [
             f"今日总 Token：{format_tokens(report.total_tokens)}",
@@ -353,7 +377,11 @@ class UsageDashboard(tk.Tk):
             f"输入 Token：{format_tokens(report.input_tokens)}",
             f"输出 Token：{format_tokens(report.output_tokens)}",
             f"缓存率：{report.cache_rate:.1%}",
-            f"{limit_label}：{weekly}，下次重置 {reset}",
+            *[
+                f"{label}：{('未知' if used_percent is None else f'{used_percent:.0f}%')}，下次重置 "
+                f"{reset_at.strftime('%m-%d %H:%M') if reset_at else '未知'}"
+                for label, used_percent, reset_at in _quota_lines(report)
+            ],
             f"未计价：{unpriced}",
         ]
         self._tray_status = "\n".join(self._tray_status_lines)
@@ -940,17 +968,9 @@ class UsageDashboard(tk.Tk):
         usage = usage_for_model(report, selected_model)
         cache_rate_value = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
         cache_rate = f"{cache_rate_value:.1%}"
-        limit_label = f"{_rate_limit_label(report.rate_limit_window_minutes)}（全局）"
-        weekly = "未知" if report.weekly_used_percent is None else f"{report.weekly_used_percent:.0f}%"
-        reset = report.weekly_reset_at.strftime("%m-%d %H:%M") if report.weekly_reset_at else "未知"
         unpriced_models = _unpriced_models_for_selection(report, selected_model)
         cost_suffix = "*" if unpriced_models else ""
         token_label = "今日总 Token" if selected_model == ALL_MODELS_LABEL else "今日模型 Token"
-        if report.weekly_used_percent is None:
-            quota_bar = "░" * 10
-        else:
-            filled = max(0, min(10, round(report.weekly_used_percent / 10)))
-            quota_bar = "█" * filled + "░" * (10 - filled)
         self.summary.configure(state="normal")
         self.summary.delete("1.0", tk.END)
         self.summary.insert(tk.END, f"更新于 {now:%H:%M:%S}  ·  {now:%Y-%m-%d}\n", "label")
@@ -971,8 +991,11 @@ class UsageDashboard(tk.Tk):
             f"{format_tokens(usage.output_tokens)}\t{cache_rate}\n",
             "value",
         )
-        self.summary.insert(tk.END, f"\n{limit_label}   {quota_bar}  {weekly}\n", "accent")
-        self.summary.insert(tk.END, f"下次重置 {reset}\n", "label")
+        for label, used_percent, reset_at in _quota_lines(report):
+            used = "未知" if used_percent is None else f"{used_percent:.0f}%"
+            reset = reset_at.strftime("%m-%d %H:%M") if reset_at else "未知"
+            self.summary.insert(tk.END, f"\n{label}   {_quota_bar(used_percent)}  {used}\n", "accent")
+            self.summary.insert(tk.END, f"下次重置 {reset}\n", "label")
         self.summary.insert(
             tk.END,
             f"扫描 {report.files_with_usage}/{report.sessions_scanned} 个会话  ·  价格核对 {PRICE_CHECKED_ON:%Y-%m-%d}\n",
@@ -1139,9 +1162,16 @@ class HistoryWindow(tk.Toplevel):
         if self.days_var.get() == "最近 30 天":
             return today - timedelta(days=29)
         current = self.parent._last_report or self.current
-        if self.days_var.get() == "最近重置以来" and current and current.weekly_reset_at:
-            window = current.rate_limit_window_minutes or 10_080
-            return (current.weekly_reset_at - timedelta(minutes=window)).date()
+        if self.days_var.get() == "最近重置以来" and current:
+            if current.weekly_reset_at and (
+                current._weekly_rate_limit_observed_at is not None or current.five_hour_used_percent is None
+            ):
+                return (current.weekly_reset_at - timedelta(minutes=10_080)).date()
+            if current.five_hour_reset_at:
+                return (current.five_hour_reset_at - timedelta(minutes=300)).date()
+            if current.weekly_reset_at:
+                window = current.rate_limit_window_minutes or 10_080
+                return (current.weekly_reset_at - timedelta(minutes=window)).date()
         return today - timedelta(days=6)
 
     def load_history(self) -> None:
