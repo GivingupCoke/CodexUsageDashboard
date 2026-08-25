@@ -1,6 +1,8 @@
+import ctypes
 import time
 import tkinter as tk
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import codex_usage_dashboard as dashboard
 from usage_core import BEIJING, ModelUsage, UsageReport
@@ -199,5 +201,32 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root.toggle_collapsed()
         assert root._collapsed is False
         assert root.collapse_button.cget("text") == dashboard.COLLAPSE_ICON
+    finally:
+        root.destroy()
+
+
+def test_windows_titlebar_drag_uses_native_move_loop(monkeypatch):
+    root = create_dashboard()
+    root.withdraw()
+    calls = []
+
+    class FakeUser32:
+        def ReleaseCapture(self):
+            calls.append(("ReleaseCapture",))
+
+        def SendMessageW(self, handle, message, hit_test, parameter):
+            calls.append(("SendMessageW", handle, message, hit_test, parameter))
+
+    monkeypatch.setattr(dashboard.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=FakeUser32()))
+    root._window_handle = 1234
+    event = SimpleNamespace(x_root=100, y_root=100)
+    try:
+        assert root._start_drag(event) == "break"
+        assert calls == [
+            ("ReleaseCapture",),
+            ("SendMessageW", 1234, dashboard.WM_NCLBUTTONDOWN, dashboard.HTCAPTION, 0),
+        ]
+        assert root._drag_origin is None
     finally:
         root.destroy()

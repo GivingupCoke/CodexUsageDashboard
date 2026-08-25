@@ -51,6 +51,8 @@ MINIMIZE_ICON = "\ue921"
 MAXIMIZE_ICON = "\ue922"
 RESTORE_ICON = "\ue923"
 CLOSE_ICON = "\ue8bb"
+WM_NCLBUTTONDOWN = 0x00A1
+HTCAPTION = 2
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -451,6 +453,22 @@ class UsageDashboard(tk.Tk):
             new_x = int(event.x_root - self.winfo_width() * pointer_ratio)
             new_y = max(0, event.y_root - 18)
             self.geometry(f"+{new_x}+{new_y}")
+
+        if sys.platform == "win32" and self._window_handle:
+            try:
+                import ctypes
+
+                # Let Windows run its native move loop.  Repositioning a
+                # borderless Tk window from every <B1-Motion> event can leave
+                # stale DWM/Tk frames visible while the window is moving.
+                self._drag_origin = None
+                user32 = ctypes.windll.user32
+                user32.ReleaseCapture()
+                user32.SendMessageW(self._window_handle, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+                return "break"
+            except (AttributeError, OSError):
+                pass
+
         self._drag_origin = (event.x_root, event.y_root, self.winfo_x(), self.winfo_y())
 
     def _drag_window(self, event) -> None:
