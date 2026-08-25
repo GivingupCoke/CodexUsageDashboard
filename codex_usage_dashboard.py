@@ -32,9 +32,11 @@ MUTED = "#929aa8"
 SUBTLE = "#697180"
 ACCENT = "#7c8cff"
 ACCENT_HOVER = "#8f9cff"
+ACCENT_PRESSED_BG = "#6675e8"
 SUCCESS = "#55cda5"
 ERROR = "#f29a9a"
 WARNING_BG = "#2a2118"
+ACTION_PRESSED_BG = "#1d2330"
 
 ICON_FONT = "Segoe MDL2 Assets"
 UI_FONT = "Segoe UI Variable Text"
@@ -487,7 +489,7 @@ class UsageDashboard(tk.Tk):
             command=self.open_history,
             bg=CARD,
             fg=TEXT,
-            activebackground=BORDER,
+            activebackground=ACTION_PRESSED_BG,
             activeforeground=TEXT,
             disabledforeground=SUBTLE,
             font=(UI_FONT, 9),
@@ -500,13 +502,19 @@ class UsageDashboard(tk.Tk):
             cursor="hand2",
         )
         self.history_button.pack(side="left")
+        self._bind_action_button_feedback(
+            self.history_button,
+            normal_bg=CARD,
+            hover_bg=BORDER,
+            pressed_bg=ACTION_PRESSED_BG,
+        )
         self.refresh_button = tk.Button(
             controls,
             text="刷新",
             command=self.refresh,
             bg=ACCENT,
             fg="#ffffff",
-            activebackground=ACCENT_HOVER,
+            activebackground=ACCENT_PRESSED_BG,
             activeforeground="#ffffff",
             disabledforeground="#d8dcff",
             font=(UI_FONT, 9, "bold"),
@@ -519,6 +527,12 @@ class UsageDashboard(tk.Tk):
             cursor="hand2",
         )
         self.refresh_button.pack(side="left", padx=(8, 0))
+        self._bind_action_button_feedback(
+            self.refresh_button,
+            normal_bg=ACCENT,
+            hover_bg=ACCENT_HOVER,
+            pressed_bg=ACCENT_PRESSED_BG,
+        )
         ttk.Label(controls, text="每 60 秒自动更新", style="Muted.TLabel").pack(side="right")
         self.summary.tag_configure("eyebrow", foreground=ACCENT, font=(UI_FONT, 9, "bold"))
         self.summary.tag_configure("label", foreground=MUTED, font=(UI_FONT, 9))
@@ -628,6 +642,26 @@ class UsageDashboard(tk.Tk):
             button.configure(bg=ACCENT)
         else:
             button.configure(bg=TITLE_BG)
+
+    @staticmethod
+    def _set_action_button_background(button: tk.Button, color: str) -> None:
+        if str(button.cget("state")) != "disabled":
+            button.configure(bg=color)
+
+    def _bind_action_button_feedback(
+        self,
+        button: tk.Button,
+        *,
+        normal_bg: str,
+        hover_bg: str,
+        pressed_bg: str,
+    ) -> None:
+        set_background = self._set_action_button_background
+        button.bind("<Enter>", lambda _event: set_background(button, hover_bg))
+        button.bind("<Motion>", lambda _event: set_background(button, hover_bg))
+        button.bind("<Leave>", lambda _event: set_background(button, normal_bg))
+        button.bind("<ButtonPress-1>", lambda _event: set_background(button, pressed_bg))
+        button.bind("<ButtonRelease-1>", lambda _event: set_background(button, hover_bg))
 
     @staticmethod
     def _block_summary_edits(event):
@@ -853,7 +887,7 @@ class UsageDashboard(tk.Tk):
             return
         self._refresh_running = True
         request_id = self._refresh_results.begin()
-        self.refresh_button.configure(text="刷新中…", state="disabled")
+        self.refresh_button.configure(text="刷新中…", state="disabled", bg=BORDER)
         threading.Thread(target=self._refresh_worker, args=(request_id,), daemon=True).start()
         if self._refresh_poll_after is None:
             self._refresh_poll_after = self.after(50, self._poll_refresh_result)
@@ -873,7 +907,7 @@ class UsageDashboard(tk.Tk):
             self._refresh_poll_after = self.after(50, self._poll_refresh_result)
             return
         self._refresh_running = False
-        self.refresh_button.configure(text="刷新", state="normal")
+        self.refresh_button.configure(text="刷新", state="normal", bg=ACCENT)
         if result.error is not None:
             self._set_summary(f"读取失败：{result.error}\n请点击“立即刷新”重试。")
             return
