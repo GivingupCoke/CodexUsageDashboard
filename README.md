@@ -1,4 +1,4 @@
-# Codex Usage Dashboard v1.0
+# Codex Usage Dashboard
 
 一个面向 Windows 的本地 Codex 用量面板。它读取 Codex 保存在本机的会话日志，按北京时间统计每日 Token、缓存命中率、额度周期和 API 等价费用，并提供最近 7 天、30 天及当前额度周期的历史趋势。
 
