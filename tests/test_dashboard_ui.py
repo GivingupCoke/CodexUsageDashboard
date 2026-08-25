@@ -171,6 +171,15 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.refresh_button.cget("text") == "刷新"
         assert root.history_button.cget("fg") == dashboard.TEXT
         assert root.refresh_button.cget("fg") == "#ffffff"
+        root._update_tray_status(make_report(unknown=True))
+        assert "今日总 Token" in root._tray_status
+        assert "API 参考估算" in root._tray_status
+        assert "输入 Token" in root._tray_status
+        assert "输出 Token" in root._tray_status
+        assert "缓存率" in root._tray_status
+        assert "周额度" in root._tray_status
+        assert "未计价：stealth/ox-alpha" in root._tray_status
+        assert len(root._tray_status_lines) == 7
 
         root.pin_button.invoke()
         assert root._topmost.get() is False
@@ -205,6 +214,13 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root.toggle_collapsed()
         assert root._collapsed is False
         assert root.collapse_button.cget("text") == dashboard.COLLAPSE_ICON
+
+        root._tray_icon = object()
+        root.close_button.invoke()
+        assert root.state() == "withdrawn"
+        root._show_main_window()
+        assert root.state() != "withdrawn"
+        root._tray_icon = None
     finally:
         root.destroy()
 

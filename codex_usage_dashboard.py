@@ -44,6 +44,7 @@ APP_ICON_ICO = Path("assets") / "codex_usage_dashboard.ico"
 APP_ICON_PNG = Path("assets") / "codex_usage_dashboard.png"
 CAPTION_HOVER_BG = "#29344a"
 WINDOWS_APP_USER_MODEL_ID = "LiHua.CodexUsageDashboard"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\LiHua.CodexUsageDashboard.SingleInstance"
 PIN_ICON = "\ue718"
 COLLAPSE_ICON = "\ue70e"
 EXPAND_ICON = "\ue70d"
@@ -53,12 +54,63 @@ RESTORE_ICON = "\ue923"
 CLOSE_ICON = "\ue8bb"
 WM_NCLBUTTONDOWN = 0x00A1
 HTCAPTION = 2
+SWP_SHOWWINDOW = 0x0040
+SW_HIDE = 0
+SW_SHOW = 5
+SW_RESTORE = 9
+ERROR_ALREADY_EXISTS = 183
+
+_instance_mutex_handle: int | None = None
 
 
 def _resource_path(relative_path: str | Path) -> Path:
     """Resolve an asset both from source checkout and a PyInstaller bundle."""
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return bundle_root / relative_path
+
+
+def _activate_existing_instance() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        handle = user32.FindWindowW(None, f"{APP_DISPLAY_NAME} · 今日用量")
+        if not handle:
+            return
+        if user32.IsIconic(handle):
+            user32.ShowWindow(handle, SW_RESTORE)
+        else:
+            user32.ShowWindow(handle, SW_SHOW)
+        user32.BringWindowToTop(handle)
+        user32.SetForegroundWindow(handle)
+    except (AttributeError, OSError):
+        return
+
+
+def _acquire_single_instance() -> bool:
+    """Keep one dashboard process and focus it when launched again."""
+    global _instance_mutex_handle
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            _activate_existing_instance()
+            return False
+        _instance_mutex_handle = int(handle)
+        return True
+    except (AttributeError, OSError):
+        return True
 
 
 @dataclass(frozen=True)
@@ -131,8 +183,8 @@ def _set_native_titlebar_dark(window: tk.Misc) -> None:
 
 class UsageDashboard(tk.Tk):
     def __init__(self) -> None:
-        super().__init__()
         self._set_windows_app_identity()
+        super().__init__()
         self.title(f"{APP_DISPLAY_NAME} · 今日用量")
         self.geometry("430x420")
         self.minsize(380, 400)
@@ -148,6 +200,19 @@ class UsageDashboard(tk.Tk):
         self._restore_geometry = self._expanded_geometry
         self._drag_origin: tuple[int, int, int, int] | None = None
         self._window_handle: int | None = None
+        self._taskbar_registration_forced = False
+        self._taskbar_registration_attempts = 0
+        self._tray_icon: Any | None = None
+        self._tray_status_lines = [
+            "今日总 Token：读取中…",
+            "API 参考估算：读取中…",
+            "输入 Token：读取中…",
+            "输出 Token：读取中…",
+            "缓存率：读取中…",
+            "周额度：读取中…",
+            "未计价：读取中…",
+        ]
+        self._tray_status = "\n".join(self._tray_status_lines)
         self._last_report: UsageReport | None = None
         self._history_window: HistoryWindow | None = None
         self._refresh_results = LatestResultQueue()
@@ -156,7 +221,8 @@ class UsageDashboard(tk.Tk):
         self._build_ui()
         self._apply_windows_window_style()
         self.after_idle(self._apply_windows_window_style)
-        self.after(150, self._apply_windows_window_style)
+        self.after(800, self._register_taskbar_window)
+        self.protocol("WM_DELETE_WINDOW", self._close_to_tray)
         self._set_summary("正在读取今日日志…")
         self.refresh()
         self.after(60_000, self._scheduled_refresh)
@@ -194,6 +260,102 @@ class UsageDashboard(tk.Tk):
                 self.iconphoto(True, self._app_icon_image)
         except tk.TclError:
             pass
+
+    def _setup_tray(self) -> None:
+        if sys.platform != "win32" or self._tray_icon is not None:
+            return
+        try:
+            import pystray
+            from PIL import Image
+
+            with Image.open(_resource_path(APP_ICON_PNG)) as source:
+                tray_image = source.convert("RGBA")
+            status_items = [
+                pystray.MenuItem(
+                    lambda item, index=index: self._tray_status_text(index, item),
+                    None,
+                    enabled=False,
+                )
+                for index in range(len(self._tray_status_lines))
+            ]
+            menu = pystray.Menu(
+                *status_items,
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
+                    "进入主界面",
+                    lambda _icon, _item: self.after(0, self._show_main_window),
+                    default=True,
+                ),
+                pystray.MenuItem("刷新", lambda _icon, _item: self.after(0, self.refresh)),
+                pystray.MenuItem("历史记录", lambda _icon, _item: self.after(0, self._open_history_from_tray)),
+                pystray.MenuItem("退出", lambda _icon, _item: self.after(0, self._exit_application)),
+            )
+            self._tray_icon = pystray.Icon(
+                "CodexUsageDashboard",
+                tray_image,
+                self._tray_status,
+                menu,
+            )
+            threading.Thread(
+                target=self._tray_icon.run,
+                name="CodexUsageDashboardTray",
+                daemon=True,
+            ).start()
+        except (ImportError, OSError, tk.TclError):
+            self._tray_icon = None
+
+    def _tray_status_text(self, index: int, _item=None) -> str:
+        return self._tray_status_lines[index]
+
+    def _update_tray_status(self, report: UsageReport) -> None:
+        suffix = "*" if report.cost_is_partial else ""
+        weekly = "未知" if report.weekly_used_percent is None else f"{report.weekly_used_percent:.0f}%"
+        reset = report.weekly_reset_at.strftime("%m-%d %H:%M") if report.weekly_reset_at else "未知"
+        limit_label = _rate_limit_label(report.rate_limit_window_minutes)
+        unpriced = ", ".join(report.unpriced_models) if report.cost_is_partial else "无"
+        self._tray_status_lines = [
+            f"今日总 Token：{format_tokens(report.total_tokens)}",
+            f"API 参考估算：${report.cost_usd:,.4f}{suffix}",
+            f"输入 Token：{format_tokens(report.input_tokens)}",
+            f"输出 Token：{format_tokens(report.output_tokens)}",
+            f"缓存率：{report.cache_rate:.1%}",
+            f"{limit_label}：{weekly}，下次重置 {reset}",
+            f"未计价：{unpriced}",
+        ]
+        self._tray_status = "\n".join(self._tray_status_lines)
+        if self._tray_icon is not None:
+            self._tray_icon.title = self._tray_status
+            self._tray_icon.update_menu()
+
+    def _show_main_window(self) -> None:
+        if not self.winfo_exists():
+            return
+        self.deiconify()
+        self._apply_windows_window_style()
+        self.after_idle(self._apply_windows_window_style)
+        self.lift()
+        self.attributes("-topmost", self._topmost.get())
+        self.focus_force()
+
+    def _open_history_from_tray(self) -> None:
+        self._show_main_window()
+        self.open_history()
+
+    def _close_to_tray(self) -> None:
+        if self._tray_icon is None:
+            self.destroy()
+            return
+        if self._history_window is not None and self._history_window.winfo_exists():
+            self._history_window.withdraw()
+        self.withdraw()
+
+    def _exit_application(self) -> None:
+        if self._history_window is not None and self._history_window.winfo_exists():
+            self._history_window._close()
+        if self._tray_icon is not None:
+            self._tray_icon.stop()
+            self._tray_icon = None
+        self.destroy()
 
     def _build_ui(self) -> None:
         style = ttk.Style(self)
@@ -359,7 +521,7 @@ class UsageDashboard(tk.Tk):
         self.close_button = self._caption_button(
             self.caption_controls,
             CLOSE_ICON,
-            self.destroy,
+            self._close_to_tray,
             hover_bg="#c42b1c",
         )
         for button in (self.pin_button, self.minimize_button, self.maximize_button, self.close_button):
@@ -440,13 +602,51 @@ class UsageDashboard(tk.Tk):
             activebackground=ACCENT_HOVER if active else PANEL,
         )
 
+    def _register_taskbar_window(self) -> None:
+        if not self.winfo_exists() or self.state() == "withdrawn":
+            return
+        self._taskbar_registration_attempts += 1
+        if not self.winfo_viewable():
+            if self._taskbar_registration_attempts < 20:
+                self.after(250, self._register_taskbar_window)
+            return
+        # The initial Tk window can be visible before Explorer has observed
+        # its final styles. Repeat the hide/show transition after startup so
+        # the shell creates a persistent taskbar button.
+        self._taskbar_registration_forced = False
+        self._apply_windows_window_style()
+        if not self._taskbar_registration_forced and self._taskbar_registration_attempts < 20:
+            self.after(250, self._register_taskbar_window)
+
     def _apply_windows_window_style(self) -> None:
         if sys.platform != "win32" or not self.winfo_exists():
             return
         try:
             import ctypes
 
-            user32 = ctypes.windll.user32
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            hwnd_type = ctypes.c_void_p
+            long_ptr_type = ctypes.c_ssize_t
+            user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            user32.FindWindowW.restype = hwnd_type
+            user32.GetAncestor.argtypes = [hwnd_type, ctypes.c_uint]
+            user32.GetAncestor.restype = hwnd_type
+            user32.GetParent.argtypes = [hwnd_type]
+            user32.GetParent.restype = hwnd_type
+            user32.GetWindowLongPtrW.argtypes = [hwnd_type, ctypes.c_int]
+            user32.GetWindowLongPtrW.restype = long_ptr_type
+            user32.SetWindowLongPtrW.argtypes = [hwnd_type, ctypes.c_int, long_ptr_type]
+            user32.SetWindowLongPtrW.restype = long_ptr_type
+            user32.SetWindowPos.argtypes = [
+                hwnd_type,
+                hwnd_type,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint,
+            ]
+            user32.SetWindowPos.restype = ctypes.c_bool
             inner_handle = self.winfo_id()
             handle = (
                 user32.FindWindowW(None, self.title())
@@ -454,7 +654,8 @@ class UsageDashboard(tk.Tk):
                 or user32.GetParent(inner_handle)
                 or inner_handle
             )
-            self._window_handle = handle
+            handle = ctypes.c_void_p(handle)
+            self._window_handle = handle.value
             get_window_long = user32.GetWindowLongPtrW
             set_window_long = user32.SetWindowLongPtrW
             style = get_window_long(handle, -16)
@@ -466,7 +667,24 @@ class UsageDashboard(tk.Tk):
             # A borderless Tk window may retain an owner and then disappear
             # from the taskbar. Make the root a normal app window explicitly.
             user32.SetWindowLongPtrW(handle, -8, 0)
-            user32.SetWindowPos(handle, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+            window_was_visible = bool(user32.IsWindowVisible(handle))
+            if not self._taskbar_registration_forced and window_was_visible:
+                # Tk's overrideredirect window is initially omitted from the
+                # taskbar. A hide/show transition after the final style change
+                # forces Explorer to create the taskbar button immediately.
+                user32.ShowWindow(handle, SW_HIDE)
+            user32.SetWindowPos(
+                handle,
+                ctypes.c_void_p(0),
+                0,
+                0,
+                0,
+                0,
+                0x0001 | 0x0002 | 0x0004 | 0x0020 | SWP_SHOWWINDOW,
+            )
+            if window_was_visible:
+                user32.ShowWindow(handle, SW_SHOW)
+                self._taskbar_registration_forced = True
             try:
                 corner_preference = ctypes.c_int(2)
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
@@ -603,6 +821,7 @@ class UsageDashboard(tk.Tk):
         report = result.value
         if isinstance(report, UsageReport):
             self._last_report = report
+            self._update_tray_status(report)
             self._render_summary(report)
 
     def _set_summary(self, text: str) -> None:
@@ -948,7 +1167,11 @@ class HistoryWindow(tk.Toplevel):
 
 
 def main() -> None:
-    UsageDashboard().mainloop()
+    if not _acquire_single_instance():
+        return
+    dashboard = UsageDashboard()
+    dashboard._setup_tray()
+    dashboard.mainloop()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ version = "1.0"
 description = "Local Beijing-day Codex usage dashboard for Windows"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["matplotlib>=3.8,<4", "Pillow>=12.3,<13"]
+dependencies = ["matplotlib>=3.8,<4", "Pillow>=12.3,<13", "pystray>=0.19,<1"]
 
 [project.optional-dependencies]
 dev = ["coverage>=7", "pytest>=8", "ruff>=0.8"]
