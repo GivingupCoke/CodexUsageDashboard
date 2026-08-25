@@ -196,6 +196,14 @@ def _session_files(root: Path, start_utc: datetime) -> Iterable[tuple[Path, obje
         return ()
 
     cutoff_timestamp = start_utc.timestamp()
+    earliest_session_day = start_utc.astimezone(BEIJING).date() - timedelta(days=1)
+
+    def session_folder_day(path: Path) -> date | None:
+        try:
+            year, month, day = path.relative_to(root).parts[:3]
+            return date(int(year), int(month), int(day))
+        except (TypeError, ValueError):
+            return None
 
     def candidates() -> Iterable[tuple[Path, object]]:
         try:
@@ -205,7 +213,11 @@ def _session_files(root: Path, start_utc: datetime) -> Iterable[tuple[Path, obje
                     stat = path.stat()
                 except OSError:
                     continue
-                if path.is_file() and stat.st_mtime >= cutoff_timestamp:
+                folder_day = session_folder_day(path)
+                if path.is_file() and (
+                    stat.st_mtime >= cutoff_timestamp
+                    or (folder_day is not None and folder_day >= earliest_session_day)
+                ):
                     yield path, stat
         except OSError:
             return

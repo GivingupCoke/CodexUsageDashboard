@@ -299,6 +299,24 @@ def test_collect_usage_keeps_latest_global_quotas_when_today_has_no_log(tmp_path
     assert result.five_hour_used_percent == 11
 
 
+def test_collect_usage_includes_cross_midnight_session_with_stale_mtime(tmp_path: Path):
+    session = tmp_path / "2026" / "08" / "25" / "cross-midnight.jsonl"
+    session.parent.mkdir(parents=True)
+    rows = [
+        event("2026-08-25T16:00:00Z", "turn_context", {"model": "gpt-5.6-sol"}),
+        token_event("2026-08-25T16:00:01Z", 1_000, 600, 100),
+    ]
+    session.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    stale_mtime = datetime(2026, 8, 25, 15, tzinfo=timezone.utc).timestamp()
+    os.utime(session, (stale_mtime, stale_mtime))
+
+    result = collect_usage(tmp_path, date(2026, 8, 26))
+
+    assert result.sessions_scanned == 1
+    assert result.files_with_usage == 1
+    assert result.total_tokens == 1_100
+
+
 def test_history_parse_errors_are_not_multiplied_across_days(tmp_path: Path):
     session = write_session(tmp_path, [])
     session.write_text('{"token_count": broken}\n', encoding="utf-8")
