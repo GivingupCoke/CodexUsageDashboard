@@ -1,0 +1,45 @@
+from pathlib import Path
+import tomllib
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_windows_release_build_is_reproducible():
+    build_script = (ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(encoding="utf-8")
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project_data = tomllib.loads(project)
+
+    assert 'build = ["pyinstaller>=6,<7"]' in project
+    assert project_data["project"]["version"] == "1.0"
+    assert "python -m PyInstaller" in build_script
+    assert "--onefile" in build_script
+    assert "--windowed" in build_script
+    assert "CodexUsageDashboard" in build_script
+
+    assert "windows-latest" in workflow
+    assert "actions/checkout@v6" in workflow
+    assert "actions/setup-python@v6" in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert "python -m pytest -q" in workflow
+    assert "scripts/build_windows.ps1" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+    assert "actions/download-artifact@v8" in workflow
+    assert "publish-release:" in workflow
+    assert "contents: read" in workflow
+    assert "gh release" in workflow
+
+
+def test_readme_leads_with_double_click_release_instructions():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    ordinary_user = readme.index("## 普通用户：下载后双击运行")
+    developer = readme.index("## 开发者：从源码运行")
+
+    assert ordinary_user < developer
+    assert readme.startswith("# Codex Usage Dashboard v1.0")
+    assert "Releases" in readme[ordinary_user:developer]
+    assert "CodexUsageDashboard.exe" in readme[ordinary_user:developer]
+    assert "无需安装 Python" in readme[ordinary_user:developer]
+    assert "py -3.12 -m venv" not in readme[:developer]
+    assert "git tag v1.0" in readme

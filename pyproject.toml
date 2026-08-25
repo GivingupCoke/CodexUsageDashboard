@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-usage-dashboard"
+version = "1.0"
+description = "Local Beijing-day Codex usage dashboard for Windows"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["matplotlib>=3.8,<4", "Pillow>=12.3,<13"]
+
+[project.optional-dependencies]
+dev = ["coverage>=7", "pytest>=8", "ruff>=0.8"]
+build = ["pyinstaller>=6,<7"]
+
+[project.gui-scripts]
+codex-usage-dashboard = "codex_usage_dashboard:main"
+
+[tool.setuptools]
+py-modules = ["codex_usage_dashboard", "usage_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.coverage.run]
+branch = true
+source = ["codex_usage_dashboard", "usage_core"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

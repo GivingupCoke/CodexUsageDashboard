@@ -1,0 +1,844 @@
+from __future__ import annotations
+
+import math
+import queue
+import sys
+import threading
+import tkinter as tk
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from tkinter import ttk
+from typing import Any
+
+from usage_core import (
+    BEIJING,
+    PRICE_CHECKED_ON,
+    UsageReport,
+    collect_history,
+    collect_usage,
+    format_tokens,
+)
+
+BG = "#0b0d12"
+TITLE_BG = "#0e1118"
+PANEL = "#11151d"
+CARD = "#151a24"
+BORDER = "#252b38"
+TEXT = "#f4f6f8"
+MUTED = "#929aa8"
+SUBTLE = "#697180"
+ACCENT = "#7c8cff"
+ACCENT_HOVER = "#8f9cff"
+SUCCESS = "#55cda5"
+ERROR = "#f29a9a"
+WARNING_BG = "#2a2118"
+
+ICON_FONT = "Segoe MDL2 Assets"
+UI_FONT = "Segoe UI Variable Text"
+DISPLAY_FONT = "Segoe UI Variable Display"
+APP_NAME = "Codex Usage"
+APP_VERSION = "1.0"
+APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION}"
+PIN_ICON = "\ue718"
+COLLAPSE_ICON = "\ue70e"
+EXPAND_ICON = "\ue70d"
+MINIMIZE_ICON = "\ue921"
+MAXIMIZE_ICON = "\ue922"
+RESTORE_ICON = "\ue923"
+CLOSE_ICON = "\ue8bb"
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    request_id: int
+    value: Any | None
+    error: Exception | None
+
+
+class LatestResultQueue:
+    """A thread-safe queue that only returns the newest request's result."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[WorkerResult] = queue.Queue()
+        self._current_request = 0
+
+    def begin(self) -> int:
+        self._current_request += 1
+        return self._current_request
+
+    def put(self, result: WorkerResult) -> None:
+        self._queue.put(result)
+
+    def get_current_nowait(self) -> WorkerResult | None:
+        current: WorkerResult | None = None
+        while True:
+            try:
+                candidate = self._queue.get_nowait()
+            except queue.Empty:
+                return current
+            if candidate.request_id == self._current_request:
+                current = candidate
+
+
+def tick_positions(count: int, max_ticks: int = 7) -> list[int]:
+    if count <= 0 or max_ticks <= 0:
+        return []
+    if count <= max_ticks:
+        return list(range(count))
+    if max_ticks == 1:
+        return [count - 1]
+    step = math.ceil((count - 1) / (max_ticks - 1))
+    positions = list(range(0, count, step))
+    if positions[-1] != count - 1:
+        positions.append(count - 1)
+    return positions[-max_ticks:]
+
+
+def _rate_limit_label(window_minutes: int | None) -> str:
+    if window_minutes == 10_080:
+        return "周额度"
+    if window_minutes and window_minutes % 60 == 0:
+        return f"{window_minutes // 60} 小时额度"
+    return "额度"
+
+
+def _set_native_titlebar_dark(window: tk.Misc) -> None:
+    if sys.platform != "win32" or not window.winfo_exists():
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        handle = user32.GetParent(window.winfo_id()) or window.winfo_id()
+        enabled = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(handle, 20, ctypes.byref(enabled), ctypes.sizeof(enabled))
+    except (AttributeError, OSError, tk.TclError):
+        return
+
+
+class UsageDashboard(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title(f"{APP_DISPLAY_NAME} · 今日用量")
+        self.geometry("430x420")
+        self.minsize(380, 400)
+        self.configure(bg=BG)
+        self.attributes("-topmost", True)
+        self.overrideredirect(True)
+        self.sessions_root = Path.home() / ".codex" / "sessions"
+        self._topmost = tk.BooleanVar(value=True)
+        self._collapsed = False
+        self._maximized = False
+        self._expanded_geometry = "430x420"
+        self._restore_geometry = self._expanded_geometry
+        self._drag_origin: tuple[int, int, int, int] | None = None
+        self._window_handle: int | None = None
+        self._last_report: UsageReport | None = None
+        self._history_window: HistoryWindow | None = None
+        self._refresh_results = LatestResultQueue()
+        self._refresh_running = False
+        self._refresh_poll_after: str | None = None
+        self._build_ui()
+        self.after_idle(self._apply_windows_window_style)
+        self._set_summary("正在读取今日日志…")
+        self.refresh()
+        self.after(60_000, self._scheduled_refresh)
+
+    def _build_ui(self) -> None:
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Panel.TFrame", background=BG)
+        style.configure("Surface.TFrame", background=PANEL)
+        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=(UI_FONT, 9))
+        style.configure(
+            "Secondary.TButton",
+            background=CARD,
+            foreground=TEXT,
+            bordercolor=BORDER,
+            lightcolor=CARD,
+            darkcolor=CARD,
+            font=(UI_FONT, 9),
+            padding=(11, 6),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", BORDER), ("disabled", PANEL)],
+            foreground=[("disabled", SUBTLE)],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=ACCENT,
+            foreground="#ffffff",
+            bordercolor=ACCENT,
+            lightcolor=ACCENT,
+            darkcolor=ACCENT,
+            font=(UI_FONT, 9, "bold"),
+            padding=(11, 6),
+        )
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", BORDER)])
+
+        self._build_titlebar()
+        self.content = ttk.Frame(self, style="Panel.TFrame", padding=(16, 12, 16, 14))
+        self.content.pack(fill="both", expand=True)
+        meta = ttk.Frame(self.content, style="Panel.TFrame")
+        meta.pack(fill="x", pady=(0, 8))
+        ttk.Label(meta, text="TODAY", style="Muted.TLabel").pack(side="left")
+        self.connection_label = ttk.Label(meta, text="北京时间 · 本地日志", style="Muted.TLabel")
+        self.connection_label.pack(side="right")
+        self.body = ttk.Frame(self.content, style="Panel.TFrame")
+        self.body.pack(fill="both", expand=True)
+        self.summary = tk.Text(
+            self.body,
+            height=15,
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            bg=PANEL,
+            fg=TEXT,
+            insertbackground=TEXT,
+            selectbackground="#4454ad",
+            selectforeground="#ffffff",
+            font=(UI_FONT, 10),
+            wrap="none",
+            undo=False,
+        )
+        self.summary.pack(fill="both", expand=True)
+        self.summary.configure(padx=14, pady=12, tabs=("2.25i",))
+        self.summary.bind("<KeyPress>", self._block_summary_edits)
+        controls = ttk.Frame(self.body, style="Panel.TFrame")
+        controls.pack(fill="x", pady=(10, 0))
+        ttk.Button(controls, text="历史记录", command=self.open_history, style="Secondary.TButton").pack(side="left")
+        self.refresh_button = ttk.Button(controls, text="刷新", command=self.refresh, style="Accent.TButton")
+        self.refresh_button.pack(side="left", padx=(8, 0))
+        ttk.Label(controls, text="每 60 秒自动更新", style="Muted.TLabel").pack(side="right")
+        self.summary.tag_configure("eyebrow", foreground=ACCENT, font=(UI_FONT, 9, "bold"))
+        self.summary.tag_configure("label", foreground=MUTED, font=(UI_FONT, 9))
+        self.summary.tag_configure("hero", foreground=TEXT, font=("Cascadia Mono", 20, "bold"), spacing3=3)
+        self.summary.tag_configure("hero_cost", foreground=TEXT, font=("Cascadia Mono", 15, "bold"), spacing3=3)
+        self.summary.tag_configure("value", foreground=TEXT, font=("Cascadia Mono", 11, "bold"))
+        self.summary.tag_configure("accent", foreground=ACCENT, font=("Cascadia Mono", 10, "bold"))
+        self.summary.tag_configure("success", foreground=SUCCESS, font=("Cascadia Mono", 10, "bold"))
+        self.summary.tag_configure("divider", foreground=BORDER)
+        self.summary.tag_configure("error", foreground=ERROR, background=WARNING_BG, font=(UI_FONT, 9))
+
+    def _build_titlebar(self) -> None:
+        self.titlebar = tk.Frame(self, bg=TITLE_BG, height=40, highlightthickness=0)
+        self.titlebar.pack(fill="x")
+        self.titlebar.pack_propagate(False)
+        brand = tk.Frame(self.titlebar, bg=TITLE_BG)
+        brand.pack(side="left", fill="y", padx=(12, 0))
+        mark = tk.Label(
+            brand,
+            text="C",
+            bg=ACCENT,
+            fg="#ffffff",
+            font=(DISPLAY_FONT, 8, "bold"),
+            width=2,
+            height=1,
+        )
+        mark.pack(side="left", pady=10)
+        self.app_title_label = tk.Label(
+            brand,
+            text=APP_DISPLAY_NAME,
+            bg=TITLE_BG,
+            fg=TEXT,
+            font=(DISPLAY_FONT, 10, "bold"),
+            padx=8,
+        )
+        self.app_title_label.pack(side="left", fill="y")
+        self.collapse_button = self._caption_button(
+            brand,
+            COLLAPSE_ICON,
+            self.toggle_collapsed,
+            width=3,
+            hover_bg=PANEL,
+        )
+        self.collapse_button.pack(side="left", fill="y")
+
+        self.caption_controls = tk.Frame(self.titlebar, bg=TITLE_BG)
+        self.caption_controls.pack(side="right", fill="y")
+        self.pin_button = self._caption_button(self.caption_controls, PIN_ICON, self._toggle_topmost)
+        self.minimize_button = self._caption_button(
+            self.caption_controls,
+            MINIMIZE_ICON,
+            self._minimize_window,
+        )
+        self.maximize_button = self._caption_button(
+            self.caption_controls,
+            MAXIMIZE_ICON,
+            self._toggle_maximize,
+        )
+        self.close_button = self._caption_button(
+            self.caption_controls,
+            CLOSE_ICON,
+            self.destroy,
+            hover_bg="#c42b1c",
+        )
+        for button in (self.pin_button, self.minimize_button, self.maximize_button, self.close_button):
+            button.pack(side="left", fill="y")
+        self._sync_pin_button()
+
+        for widget in (self.titlebar, brand, mark, self.app_title_label):
+            widget.bind("<ButtonPress-1>", self._start_drag)
+            widget.bind("<B1-Motion>", self._drag_window)
+            widget.bind("<Double-Button-1>", lambda _event: self._toggle_maximize())
+            widget.bind("<Button-3>", self._show_system_menu)
+
+    def _caption_button(
+        self,
+        parent: tk.Misc,
+        text: str,
+        command,
+        *,
+        width: int = 5,
+        hover_bg: str = PANEL,
+    ) -> tk.Button:
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            bd=0,
+            relief="flat",
+            bg=TITLE_BG,
+            fg=TEXT,
+            activebackground=hover_bg,
+            activeforeground="#ffffff",
+            font=(ICON_FONT, 10),
+            cursor="hand2",
+            takefocus=True,
+        )
+        button.bind("<Enter>", lambda _event: button.configure(bg=hover_bg))
+        button.bind("<Leave>", lambda _event: self._reset_caption_button(button))
+        return button
+
+    def _reset_caption_button(self, button: tk.Button) -> None:
+        if button is self.pin_button and self._topmost.get():
+            button.configure(bg=ACCENT)
+        else:
+            button.configure(bg=TITLE_BG)
+
+    @staticmethod
+    def _block_summary_edits(event):
+        if (event.state & 0x4) and event.keysym.lower() in {"a", "c"}:
+            return None
+        return "break"
+
+    def toggle_collapsed(self) -> None:
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self._expanded_geometry = self.geometry()
+            self.content.pack_forget()
+            self.collapse_button.configure(text=EXPAND_ICON)
+            self.minsize(380, 40)
+            self.geometry(f"{max(380, self.winfo_width())}x40+{self.winfo_x()}+{self.winfo_y()}")
+        else:
+            self.content.pack(fill="both", expand=True)
+            self.collapse_button.configure(text=COLLAPSE_ICON)
+            self.minsize(380, 400)
+            self.geometry(self._expanded_geometry)
+
+    def _toggle_topmost(self) -> None:
+        self._topmost.set(not self._topmost.get())
+        self.attributes("-topmost", self._topmost.get())
+        self._sync_pin_button()
+
+    def _sync_pin_button(self) -> None:
+        active = self._topmost.get()
+        self.pin_button.configure(
+            bg=ACCENT if active else TITLE_BG,
+            activebackground=ACCENT_HOVER if active else PANEL,
+        )
+
+    def _apply_windows_window_style(self) -> None:
+        if sys.platform != "win32" or not self.winfo_exists():
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            inner_handle = self.winfo_id()
+            handle = user32.GetParent(inner_handle) or inner_handle
+            self._window_handle = handle
+            get_window_long = user32.GetWindowLongPtrW
+            set_window_long = user32.SetWindowLongPtrW
+            style = get_window_long(handle, -16)
+            style |= 0x00080000 | 0x00040000 | 0x00020000 | 0x00010000
+            set_window_long(handle, -16, style)
+            ex_style = get_window_long(handle, -20)
+            ex_style = (ex_style & ~0x00000080) | 0x00040000
+            set_window_long(handle, -20, ex_style)
+            user32.SetWindowPos(handle, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+            try:
+                corner_preference = ctypes.c_int(2)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    handle,
+                    33,
+                    ctypes.byref(corner_preference),
+                    ctypes.sizeof(corner_preference),
+                )
+            except (AttributeError, OSError):
+                pass
+        except (AttributeError, OSError, tk.TclError):
+            self._window_handle = None
+
+    def _start_drag(self, event) -> None:
+        if self._maximized:
+            pointer_ratio = event.x_root / max(1, self.winfo_screenwidth())
+            self._toggle_maximize()
+            self.update_idletasks()
+            new_x = int(event.x_root - self.winfo_width() * pointer_ratio)
+            new_y = max(0, event.y_root - 18)
+            self.geometry(f"+{new_x}+{new_y}")
+        self._drag_origin = (event.x_root, event.y_root, self.winfo_x(), self.winfo_y())
+
+    def _drag_window(self, event) -> None:
+        if self._drag_origin is None:
+            return
+        start_x, start_y, window_x, window_y = self._drag_origin
+        self.geometry(f"+{window_x + event.x_root - start_x}+{window_y + event.y_root - start_y}")
+
+    def _minimize_window(self) -> None:
+        if sys.platform == "win32" and self._window_handle:
+            try:
+                import ctypes
+
+                ctypes.windll.user32.ShowWindow(self._window_handle, 6)
+                return
+            except (AttributeError, OSError):
+                pass
+        self.overrideredirect(False)
+        self.iconify()
+        self.after(100, lambda: self.overrideredirect(True))
+
+    def _toggle_maximize(self) -> None:
+        was_withdrawn = self.state() == "withdrawn"
+        if not self._maximized:
+            self._restore_geometry = self.geometry()
+            self._maximized = True
+            command = 3
+        else:
+            self._maximized = False
+            command = 9
+        self.maximize_button.configure(text=RESTORE_ICON if self._maximized else MAXIMIZE_ICON)
+        if was_withdrawn:
+            return
+        if sys.platform == "win32" and self._window_handle:
+            try:
+                import ctypes
+
+                ctypes.windll.user32.ShowWindow(self._window_handle, command)
+                return
+            except (AttributeError, OSError):
+                pass
+        if self._maximized:
+            self.state("zoomed")
+        else:
+            self.state("normal")
+            self.geometry(self._restore_geometry)
+
+    def _show_system_menu(self, event) -> None:
+        if sys.platform != "win32" or not self._window_handle:
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            menu = user32.GetSystemMenu(self._window_handle, False)
+            command = user32.TrackPopupMenu(
+                menu, 0x0100 | 0x0002, event.x_root, event.y_root, 0, self._window_handle, None
+            )
+            if command:
+                user32.PostMessageW(self._window_handle, 0x0112, command, 0)
+        except (AttributeError, OSError):
+            return
+
+    def _scheduled_refresh(self) -> None:
+        self.refresh()
+        self.after(60_000, self._scheduled_refresh)
+
+    def refresh(self) -> None:
+        if self._refresh_running:
+            return
+        self._refresh_running = True
+        request_id = self._refresh_results.begin()
+        self.refresh_button.configure(text="刷新中…", state="disabled")
+        threading.Thread(target=self._refresh_worker, args=(request_id,), daemon=True).start()
+        if self._refresh_poll_after is None:
+            self._refresh_poll_after = self.after(50, self._poll_refresh_result)
+
+    def _refresh_worker(self, request_id: int) -> None:
+        try:
+            report = collect_usage(self.sessions_root, datetime.now(BEIJING).date())
+            result = WorkerResult(request_id, report, None)
+        except Exception as exc:
+            result = WorkerResult(request_id, None, exc)
+        self._refresh_results.put(result)
+
+    def _poll_refresh_result(self) -> None:
+        self._refresh_poll_after = None
+        result = self._refresh_results.get_current_nowait()
+        if result is None:
+            self._refresh_poll_after = self.after(50, self._poll_refresh_result)
+            return
+        self._refresh_running = False
+        self.refresh_button.configure(text="刷新", state="normal")
+        if result.error is not None:
+            self._set_summary(f"读取失败：{result.error}\n请点击“立即刷新”重试。")
+            return
+        report = result.value
+        if isinstance(report, UsageReport):
+            self._last_report = report
+            self._render_summary(report)
+
+    def _set_summary(self, text: str) -> None:
+        self.summary.configure(state="normal")
+        self.summary.delete("1.0", tk.END)
+        self.summary.insert("1.0", text)
+        self.summary.configure(state="disabled")
+
+    def _render_summary(self, report: UsageReport) -> None:
+        now = datetime.now(BEIJING)
+        cache_rate = f"{report.cache_rate:.1%}"
+        limit_label = _rate_limit_label(report.rate_limit_window_minutes)
+        weekly = "未知" if report.weekly_used_percent is None else f"{report.weekly_used_percent:.0f}%"
+        reset = report.weekly_reset_at.strftime("%m-%d %H:%M") if report.weekly_reset_at else "未知"
+        cost_suffix = "*" if report.cost_is_partial else ""
+        if report.weekly_used_percent is None:
+            quota_bar = "░" * 10
+        else:
+            filled = max(0, min(10, round(report.weekly_used_percent / 10)))
+            quota_bar = "█" * filled + "░" * (10 - filled)
+        self.summary.configure(state="normal")
+        self.summary.delete("1.0", tk.END)
+        self.summary.insert(tk.END, f"更新于 {now:%H:%M:%S}  ·  {now:%Y-%m-%d}\n", "label")
+        self.summary.insert(tk.END, "\n今日总 Token\tAPI 参考估算\n", "label")
+        self.summary.insert(tk.END, format_tokens(report.total_tokens), "hero")
+        self.summary.insert(tk.END, "\t")
+        self.summary.insert(tk.END, f"${report.cost_usd:,.4f}{cost_suffix}\n", "hero_cost")
+        self.summary.insert(tk.END, "────────────────────────────────────\n", "divider")
+        self.summary.insert(tk.END, "输入 Token\t缓存输入 Token\n", "label")
+        self.summary.insert(
+            tk.END,
+            f"{format_tokens(report.input_tokens)}\t{format_tokens(report.cached_input_tokens)}\n",
+            "value",
+        )
+        self.summary.insert(tk.END, "\n输出 Token\t缓存率\n", "label")
+        self.summary.insert(
+            tk.END,
+            f"{format_tokens(report.output_tokens)}\t{cache_rate}\n",
+            "value",
+        )
+        self.summary.insert(tk.END, f"\n{limit_label}   {quota_bar}  {weekly}\n", "accent")
+        self.summary.insert(tk.END, f"下次重置 {reset}\n", "label")
+        self.summary.insert(
+            tk.END,
+            f"扫描 {report.files_with_usage}/{report.sessions_scanned} 个会话  ·  价格核对 {PRICE_CHECKED_ON:%Y-%m-%d}\n",
+            "label",
+        )
+        if report.cost_is_partial:
+            self.summary.insert(tk.END, f"* 未计价模型：{', '.join(report.unpriced_models)}\n", "error")
+        if report.parse_errors:
+            self.summary.insert(tk.END, f"日志警告：{report.parse_errors} 条记录未能解析\n", "error")
+        self.summary.configure(state="disabled")
+
+    def open_history(self) -> None:
+        if self._history_window is not None and self._history_window.winfo_exists():
+            self._history_window.deiconify()
+            self._history_window.lift()
+            self._history_window.focus_force()
+            return
+        self._history_window = HistoryWindow(self, self.sessions_root, self._last_report)
+
+
+class HistoryWindow(tk.Toplevel):
+    def __init__(self, parent: UsageDashboard, sessions_root: Path, current: UsageReport | None):
+        super().__init__(parent)
+        self.parent = parent
+        self.title(f"{APP_DISPLAY_NAME} · 历史用量")
+        self.geometry("900x650")
+        self.minsize(720, 520)
+        self.configure(bg=BG)
+        self.transient(parent)
+        self.sessions_root = sessions_root
+        self.current = current
+        self.queue = LatestResultQueue()
+        self.days_var = tk.StringVar(value="最近 7 天")
+        self._poll_after: str | None = None
+        self._figure: Any | None = None
+        self._build_ui()
+        self.after_idle(lambda: _set_native_titlebar_dark(self))
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.load_history()
+
+    def _build_ui(self) -> None:
+        style = ttk.Style(self)
+        style.configure("History.TFrame", background=BG)
+        style.configure("HistorySurface.TFrame", background=PANEL)
+        style.configure(
+            "HistoryTitle.TLabel",
+            background=BG,
+            foreground=TEXT,
+            font=(DISPLAY_FONT, 16, "bold"),
+        )
+        style.configure(
+            "History.TCombobox",
+            fieldbackground=CARD,
+            background=CARD,
+            foreground=TEXT,
+            arrowcolor=MUTED,
+            bordercolor=BORDER,
+            lightcolor=CARD,
+            darkcolor=CARD,
+            padding=(8, 5),
+        )
+        style.map(
+            "History.TCombobox",
+            fieldbackground=[("readonly", CARD)],
+            foreground=[("readonly", TEXT)],
+            selectbackground=[("readonly", CARD)],
+            selectforeground=[("readonly", TEXT)],
+        )
+        style.configure(
+            "History.Treeview",
+            background=PANEL,
+            fieldbackground=PANEL,
+            foreground=TEXT,
+            bordercolor=BORDER,
+            lightcolor=PANEL,
+            darkcolor=PANEL,
+            rowheight=28,
+            font=(UI_FONT, 9),
+        )
+        style.map(
+            "History.Treeview",
+            background=[("selected", "#35417d")],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "History.Treeview.Heading",
+            background=CARD,
+            foreground=MUTED,
+            bordercolor=BORDER,
+            relief="flat",
+            font=(UI_FONT, 9, "bold"),
+            padding=(7, 7),
+        )
+        style.map("History.Treeview.Heading", background=[("active", BORDER)])
+        top = ttk.Frame(self, style="History.TFrame", padding=(16, 14, 16, 12))
+        top.pack(fill="x")
+        ttk.Label(top, text="历史用量", style="HistoryTitle.TLabel").pack(side="left")
+        period = ttk.Combobox(
+            top,
+            textvariable=self.days_var,
+            values=("最近 7 天", "最近 30 天", "最近重置以来"),
+            state="readonly",
+            width=16,
+            style="History.TCombobox",
+        )
+        period.pack(side="right")
+        period.bind("<<ComboboxSelected>>", lambda _event: self.load_history())
+        self.chart_frame = ttk.Frame(self, style="HistorySurface.TFrame", padding=1)
+        self.chart_frame.pack(fill="both", expand=True, padx=16)
+        columns = ("date", "total", "input", "cached", "output", "rate", "cost")
+        table_frame = ttk.Frame(self, style="History.TFrame")
+        table_frame.pack(fill="x", padx=16, pady=(10, 16))
+        self.table = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=9,
+            selectmode="extended",
+            style="History.Treeview",
+        )
+        headings = {
+            "date": "日期",
+            "total": "总 Token",
+            "input": "输入",
+            "cached": "缓存输入",
+            "output": "输出",
+            "rate": "缓存率",
+            "cost": "美元等价",
+        }
+        widths = {
+            "date": 120,
+            "total": 110,
+            "input": 110,
+            "cached": 110,
+            "output": 100,
+            "rate": 80,
+            "cost": 100,
+        }
+        for col in columns:
+            self.table.heading(col, text=headings[col])
+            self.table.column(col, width=widths[col], anchor="center", stretch=True)
+        self.table.tag_configure("total", background=CARD, foreground=ACCENT, font=(UI_FONT, 9, "bold"))
+        self.table.tag_configure("even", background="#131821")
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=scrollbar.set)
+        self.table.pack(side="left", fill="x", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.table.bind("<Control-c>", self._copy_selected_rows)
+
+    def _history_start(self) -> date:
+        today = datetime.now(BEIJING).date()
+        if self.days_var.get() == "最近 30 天":
+            return today - timedelta(days=29)
+        current = self.parent._last_report or self.current
+        if self.days_var.get() == "最近重置以来" and current and current.weekly_reset_at:
+            window = current.rate_limit_window_minutes or 10_080
+            return (current.weekly_reset_at - timedelta(minutes=window)).date()
+        return today - timedelta(days=6)
+
+    def load_history(self) -> None:
+        request_id = self.queue.begin()
+        start = self._history_start()
+        self._clear_chart()
+        ttk.Label(self.chart_frame, text="正在读取历史日志…", foreground=MUTED, background=PANEL).pack(pady=30)
+        threading.Thread(target=self._worker, args=(request_id, start), daemon=True).start()
+        if self._poll_after is None:
+            self._poll_after = self.after(50, self._poll_result)
+
+    def _worker(self, request_id: int, start: date) -> None:
+        try:
+            result = WorkerResult(request_id, collect_history(self.sessions_root, start), None)
+        except Exception as exc:
+            result = WorkerResult(request_id, None, exc)
+        self.queue.put(result)
+
+    def _poll_result(self) -> None:
+        self._poll_after = None
+        result = self.queue.get_current_nowait()
+        if result is None:
+            self._poll_after = self.after(50, self._poll_result)
+            return
+        if result.error is not None:
+            self._clear_chart()
+            ttk.Label(
+                self.chart_frame,
+                text=f"历史读取失败：{result.error}\n请切换周期或重新打开窗口后重试。",
+                foreground=ERROR,
+                background=PANEL,
+                justify="center",
+            ).pack(pady=30)
+            return
+        reports = result.value
+        if isinstance(reports, list):
+            self._render_history(reports)
+
+    def _clear_chart(self) -> None:
+        if self._figure is not None:
+            self._figure.clear()
+            self._figure = None
+        for child in self.chart_frame.winfo_children():
+            child.destroy()
+
+    def _render_history(self, reports: list[UsageReport]) -> None:
+        self._clear_chart()
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+
+            fig = Figure(figsize=(8.3, 3.0), dpi=95, facecolor=PANEL)
+            self._figure = fig
+            ax = fig.add_subplot(111, facecolor=PANEL)
+            labels = [report.day.strftime("%m-%d") for report in reports]
+            costs = [report.cost_usd for report in reports]
+            tokens = [report.total_tokens / 1_000_000 for report in reports]
+            x_values = list(range(len(reports)))
+            ax.bar(x_values, costs, color="#343b4c", alpha=0.95, width=0.72)
+            ax.set_ylabel("USD", color=SUBTLE)
+            ax.tick_params(colors=MUTED, labelsize=8)
+            positions = tick_positions(len(labels))
+            ax.set_xticks(
+                positions,
+                [labels[index] for index in positions],
+                rotation=30,
+                ha="right",
+            )
+            ax.spines[:].set_color(BORDER)
+            ax.grid(axis="y", color=BORDER, alpha=0.55, linewidth=0.7)
+            ax.set_axisbelow(True)
+            ax2 = ax.twinx()
+            ax2.plot(x_values, tokens, color=ACCENT, marker="o", markersize=3.5, linewidth=1.8)
+            ax2.set_ylabel("Million tokens", color=MUTED)
+            ax2.tick_params(colors=MUTED, labelsize=8)
+            ax2.spines[:].set_color(BORDER)
+            fig.tight_layout()
+            canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+        except Exception as exc:
+            ttk.Label(
+                self.chart_frame,
+                text=f"图表加载失败：{exc}",
+                foreground=ERROR,
+                background=PANEL,
+            ).pack(pady=30)
+
+        for item in self.table.get_children():
+            self.table.delete(item)
+        total_input = sum(report.input_tokens for report in reports)
+        total_cached = sum(report.cached_input_tokens for report in reports)
+        total_output = sum(report.output_tokens for report in reports)
+        total_tokens = sum(report.total_tokens for report in reports)
+        total_cost = sum(report.cost_usd for report in reports)
+        total_rate = total_cached / total_input if total_input else 0.0
+        partial = any(report.cost_is_partial for report in reports)
+        suffix = "*" if partial else ""
+        self.table.insert(
+            "",
+            "end",
+            values=(
+                f"合计（{len(reports)}天）",
+                format_tokens(total_tokens),
+                format_tokens(total_input),
+                format_tokens(total_cached),
+                format_tokens(total_output),
+                f"{total_rate:.1%}",
+                f"${total_cost:,.4f}{suffix}",
+            ),
+            tags=("total",),
+        )
+        for index, report in enumerate(reversed(reports)):
+            self.table.insert(
+                "",
+                "end",
+                values=(
+                    report.day.strftime("%Y-%m-%d"),
+                    format_tokens(report.total_tokens),
+                    format_tokens(report.input_tokens),
+                    format_tokens(report.cached_input_tokens),
+                    format_tokens(report.output_tokens),
+                    f"{report.cache_rate:.1%}",
+                    f"${report.cost_usd:,.4f}{'*' if report.cost_is_partial else ''}",
+                ),
+                tags=("even",) if index % 2 else (),
+            )
+
+    def _copy_selected_rows(self, _event=None):
+        selected = self.table.selection()
+        if not selected:
+            return "break"
+        lines = ["\t".join(str(value) for value in self.table.item(item, "values")) for item in selected]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+        return "break"
+
+    def _close(self) -> None:
+        if self._poll_after is not None:
+            self.after_cancel(self._poll_after)
+            self._poll_after = None
+        self.parent._history_window = None
+        self.destroy()
+
+
+def main() -> None:
+    UsageDashboard().mainloop()
+
+
+if __name__ == "__main__":
+    main()
