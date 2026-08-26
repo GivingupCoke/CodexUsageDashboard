@@ -15,7 +15,12 @@ def create_dashboard():
         try:
             return dashboard.UsageDashboard()
         except tk.TclError as exc:
-            transient_errors = ("Can't find a usable tk.tcl", 'invalid command name "tcl_findLibrary"')
+            transient_errors = (
+                "Can't find a usable tk.tcl",
+                "Can't find a usable init.tcl",
+                "couldn't read file",
+                'invalid command name "tcl_findLibrary"',
+            )
             if attempt == max_attempts - 1 or not any(message in str(exc) for message in transient_errors):
                 raise
             time.sleep(0.05)
