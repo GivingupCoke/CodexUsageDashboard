@@ -215,6 +215,12 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert dashboard.APP_VERSION == "1.0"
         assert root.title() == "Codex Usage v1.0 · 今日用量"
         assert root.app_title_label.cget("text") == "Codex Usage v1.0"
+        assert root.geometry().split("+", 1)[0] == dashboard.MAIN_WINDOW_GEOMETRY
+        assert root.minsize() == (dashboard.MAIN_WINDOW_MIN_WIDTH, dashboard.MAIN_WINDOW_MIN_HEIGHT)
+        root.update_idletasks()
+        window_bottom = root.winfo_rooty() + root.winfo_height()
+        for button in (root.history_button, root.refresh_button):
+            assert button.winfo_rooty() + button.winfo_height() <= window_bottom
 
         caption_buttons = root.caption_controls.pack_slaves()
         assert caption_buttons == [
