@@ -12,7 +12,7 @@ def test_windows_release_build_is_reproducible():
     project_data = tomllib.loads(project)
 
     assert 'build = ["pyinstaller>=6,<7"]' in project
-    assert project_data["project"]["version"] == "1.0"
+    assert project_data["project"]["version"] == "1.1"
     assert "python -m PyInstaller" in build_script
     assert "--onefile" in build_script
     assert "--windowed" in build_script
