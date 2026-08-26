@@ -63,7 +63,20 @@ SW_HIDE = 0
 SW_SHOW = 5
 SW_RESTORE = 9
 ERROR_ALREADY_EXISTS = 183
+WS_SYSMENU = 0x00080000
+WS_THICKFRAME = 0x00040000
+WS_MINIMIZEBOX = 0x00020000
+WS_MAXIMIZEBOX = 0x00010000
+WS_CAPTION = 0x00C00000
+WS_BORDER = 0x00800000
+WS_DLGFRAME = 0x00400000
+DWMWA_BORDER_COLOR = 34
+DWMWA_COLOR_NONE = 0xFFFFFFFE
 ALL_MODELS_LABEL = "全部模型"
+
+MAIN_WINDOW_GEOMETRY = "430x480"
+MAIN_WINDOW_MIN_WIDTH = 380
+MAIN_WINDOW_MIN_HEIGHT = 460
 
 _instance_mutex_handle: int | None = None
 
@@ -252,8 +265,8 @@ class UsageDashboard(tk.Tk):
         self._set_windows_app_identity()
         super().__init__()
         self.title(f"{APP_DISPLAY_NAME} · 今日用量")
-        self.geometry("430x420")
-        self.minsize(380, 400)
+        self.geometry(MAIN_WINDOW_GEOMETRY)
+        self.minsize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
         self.configure(bg=BG)
         self._set_app_icon()
         self.attributes("-topmost", True)
@@ -263,7 +276,7 @@ class UsageDashboard(tk.Tk):
         self.model_var = tk.StringVar(value=ALL_MODELS_LABEL)
         self._collapsed = False
         self._maximized = False
-        self._expanded_geometry = "430x420"
+        self._expanded_geometry = MAIN_WINDOW_GEOMETRY
         self._restore_geometry = self._expanded_geometry
         self._drag_origin: tuple[int, int, int, int] | None = None
         self._window_handle: int | None = None
@@ -713,12 +726,12 @@ class UsageDashboard(tk.Tk):
             self._expanded_geometry = self.geometry()
             self.content.pack_forget()
             self.collapse_button.configure(text=EXPAND_ICON)
-            self.minsize(380, 40)
-            self.geometry(f"{max(380, self.winfo_width())}x40+{self.winfo_x()}+{self.winfo_y()}")
+            self.minsize(MAIN_WINDOW_MIN_WIDTH, 40)
+            self.geometry(f"{max(MAIN_WINDOW_MIN_WIDTH, self.winfo_width())}x40+{self.winfo_x()}+{self.winfo_y()}")
         else:
             self.content.pack(fill="both", expand=True)
             self.collapse_button.configure(text=COLLAPSE_ICON)
-            self.minsize(380, 400)
+            self.minsize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
             self.geometry(self._expanded_geometry)
 
     def _toggle_topmost(self) -> None:
@@ -790,7 +803,12 @@ class UsageDashboard(tk.Tk):
             get_window_long = user32.GetWindowLongPtrW
             set_window_long = user32.SetWindowLongPtrW
             style = get_window_long(handle, -16)
-            style |= 0x00080000 | 0x00040000 | 0x00020000 | 0x00010000
+            # Keep the native system commands available to the custom
+            # caption buttons, but do not ask Windows for a resize frame.
+            # The frame is rendered as a light border around the otherwise
+            # borderless Tk window on some Windows themes.
+            style &= ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME)
+            style |= WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
             set_window_long(handle, -16, style)
             ex_style = get_window_long(handle, -20)
             ex_style = (ex_style & ~0x00000080) | 0x00040000
@@ -813,6 +831,19 @@ class UsageDashboard(tk.Tk):
                 0,
                 0x0001 | 0x0002 | 0x0004 | 0x0020 | SWP_SHOWWINDOW,
             )
+            try:
+                # Windows 11 otherwise draws a 1px light border even for a
+                # popup window. DWMWA_COLOR_NONE suppresses that DWM border
+                # while keeping the custom title bar and rounded corners.
+                border_color = ctypes.c_uint(DWMWA_COLOR_NONE)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    handle,
+                    DWMWA_BORDER_COLOR,
+                    ctypes.byref(border_color),
+                    ctypes.sizeof(border_color),
+                )
+            except (AttributeError, OSError):
+                pass
             if window_was_visible:
                 user32.ShowWindow(handle, SW_SHOW)
                 self._taskbar_registration_forced = True
