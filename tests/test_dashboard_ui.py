@@ -99,7 +99,7 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         assert "今日模型 Token" in summary
         assert "55" in summary
         assert "$0.0000*" in summary
-        assert "一周额度（全局）" in summary
+        assert "一周额度" in summary
 
         root.model_var.set("gpt-5.6-sol")
         root._on_model_selected()
@@ -111,8 +111,8 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         dual_quota._weekly_rate_limit_observed_at = datetime.now(BEIJING)
         root._render_summary(dual_quota)
         dual_summary = root.summary.get("1.0", "end")
-        assert "5 小时额度（全局）" in dual_summary
-        assert "一周额度（全局）" in dual_summary
+        assert "5 小时额度" in dual_summary
+        assert "一周额度" in dual_summary
 
         root.model_var.set("stealth/ox-alpha")
         root._sync_model_options(make_report())
@@ -121,7 +121,9 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         no_quota = make_report()
         no_quota.weekly_used_percent = None
         root._render_summary(no_quota)
-        assert "░░░░░░░░░░" in root.summary.get("1.0", "end")
+        assert "未知" in root.summary.get("1.0", "end")
+        assert len(root._quota_bars) == 2
+        assert all(not canvas.find_withtag("fill") for canvas in root._quota_bars)
 
         root.toggle_collapsed()
         assert root._collapsed is True
@@ -229,6 +231,7 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
 
         caption_buttons = root.caption_controls.pack_slaves()
         assert caption_buttons == [
+            root.collapse_button,
             root.pin_button,
             root.minimize_button,
             root.maximize_button,
@@ -294,7 +297,11 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert "今日总 Token" in summary
         assert "API 参考估算" in summary
         assert "一周额度" in summary
-        assert "█" in summary
+        assert len(root._quota_bars) == 2
+        weekly_bar = root._quota_bars[1]
+        weekly_fills = weekly_bar.find_withtag("fill")
+        assert len(weekly_fills) == 1
+        assert weekly_bar.itemcget(weekly_fills[0], "fill") == dashboard.ACCENT
 
         assert root._maximized is False
         root._toggle_maximize()

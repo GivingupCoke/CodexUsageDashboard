@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any
 
@@ -38,6 +39,10 @@ SUCCESS = "#55cda5"
 ERROR = "#f29a9a"
 WARNING_BG = "#2a2118"
 ACTION_PRESSED_BG = "#1d2330"
+QUOTA_WARN_COLOR = "#e8b04a"
+QUOTA_CRITICAL_COLOR = "#f06a6a"
+QUOTA_BAR_WIDTH = 110
+QUOTA_BAR_HEIGHT = 8
 
 ICON_FONT = "Segoe MDL2 Assets"
 UI_FONT = "Segoe UI Variable Text"
@@ -75,9 +80,9 @@ DWMWA_BORDER_COLOR = 34
 DWMWA_COLOR_NONE = 0xFFFFFFFE
 ALL_MODELS_LABEL = "全部模型"
 
-MAIN_WINDOW_GEOMETRY = "430x480"
+MAIN_WINDOW_GEOMETRY = "430x368"
 MAIN_WINDOW_MIN_WIDTH = 380
-MAIN_WINDOW_MIN_HEIGHT = 460
+MAIN_WINDOW_MIN_HEIGHT = 344
 
 _instance_mutex_handle: int | None = None
 
@@ -225,13 +230,6 @@ def _quota_lines(report: UsageReport) -> list[tuple[str, float | None, datetime 
     ]
 
 
-def _quota_bar(used_percent: float | None) -> str:
-    if used_percent is None:
-        return "░" * 10
-    filled = max(0, min(10, round(used_percent / 10)))
-    return "█" * filled + "░" * (10 - filled)
-
-
 def _tray_tooltip(report: UsageReport) -> str:
     quota_by_label = {label: used_percent for label, used_percent, _reset_at in _quota_lines(report)}
 
@@ -297,6 +295,9 @@ class UsageDashboard(tk.Tk):
         self._tray_status = "\n".join(self._tray_status_lines)
         self._tray_tooltip = f"{APP_DISPLAY_NAME} · 正在读取用量"
         self._last_report: UsageReport | None = None
+        self._quota_bars: list[tk.Canvas] = []
+        self._summary_render_width = 0
+        self._dash_width: int | None = None
         self._history_window: HistoryWindow | None = None
         self._refresh_results = LatestResultQueue()
         self._refresh_running = False
@@ -446,6 +447,12 @@ class UsageDashboard(tk.Tk):
     def _build_ui(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
+        # The combobox popdown is a classic Tk listbox that ignores ttk
+        # styles; without these options it pops up with light system colors.
+        self.option_add("*TCombobox*Listbox.background", CARD)
+        self.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", "#35417d")
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         style.configure("Panel.TFrame", background=BG)
         style.configure("Surface.TFrame", background=PANEL)
         style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=(UI_FONT, 9))
@@ -495,10 +502,10 @@ class UsageDashboard(tk.Tk):
         )
 
         self._build_titlebar()
-        self.content = ttk.Frame(self, style="Panel.TFrame", padding=(16, 12, 16, 14))
+        self.content = ttk.Frame(self, style="Panel.TFrame", padding=(14, 10, 14, 12))
         self.content.pack(fill="both", expand=True)
         meta = ttk.Frame(self.content, style="Panel.TFrame")
-        meta.pack(fill="x", pady=(0, 8))
+        meta.pack(fill="x", pady=(0, 6))
         self.connection_label = ttk.Label(meta, text="北京时间 · 本地日志", style="Muted.TLabel")
         self.connection_label.pack(side="left")
         self.model_filter = ttk.Combobox(
@@ -515,7 +522,7 @@ class UsageDashboard(tk.Tk):
         self.body.pack(fill="both", expand=True)
         self.summary = tk.Text(
             self.body,
-            height=15,
+            height=11,
             relief="flat",
             borderwidth=1,
             highlightthickness=1,
@@ -531,10 +538,11 @@ class UsageDashboard(tk.Tk):
             undo=False,
         )
         self.summary.pack(fill="both", expand=True)
-        self.summary.configure(padx=14, pady=12, tabs=("2.25i",))
+        self.summary.configure(padx=12, pady=10)
         self.summary.bind("<KeyPress>", self._block_summary_edits)
+        self.summary.bind("<Configure>", self._on_summary_resize)
         controls = ttk.Frame(self.body, style="Panel.TFrame")
-        controls.pack(fill="x", pady=(10, 0))
+        controls.pack(fill="x", pady=(8, 0))
         self.history_button = tk.Button(
             controls,
             text="历史记录",
@@ -588,11 +596,12 @@ class UsageDashboard(tk.Tk):
         ttk.Label(controls, text="每 60 秒自动更新", style="Muted.TLabel").pack(side="right")
         self.summary.tag_configure("eyebrow", foreground=ACCENT, font=(UI_FONT, 9, "bold"))
         self.summary.tag_configure("label", foreground=MUTED, font=(UI_FONT, 9))
-        self.summary.tag_configure("hero", foreground=TEXT, font=("Cascadia Mono", 20, "bold"), spacing3=3)
-        self.summary.tag_configure("hero_cost", foreground=TEXT, font=("Cascadia Mono", 15, "bold"), spacing3=3)
-        self.summary.tag_configure("value", foreground=TEXT, font=("Cascadia Mono", 11, "bold"))
-        self.summary.tag_configure("accent", foreground=ACCENT, font=("Cascadia Mono", 10, "bold"))
+        self.summary.tag_configure("hero", foreground=TEXT, font=("Cascadia Mono", 18, "bold"), spacing3=2)
+        self.summary.tag_configure("hero_cost", foreground=TEXT, font=("Cascadia Mono", 14, "bold"), spacing3=2)
+        self.summary.tag_configure("value", foreground=TEXT, font=("Cascadia Mono", 10, "bold"))
+        self.summary.tag_configure("quota_label", foreground=TEXT, font=(UI_FONT, 9, "bold"), spacing1=6)
         self.summary.tag_configure("success", foreground=SUCCESS, font=("Cascadia Mono", 10, "bold"))
+        self.summary.tag_configure("footer", foreground=MUTED, font=(UI_FONT, 9), spacing1=8)
         self.summary.tag_configure("divider", foreground=BORDER)
         self.summary.tag_configure("error", foreground=ERROR, background=WARNING_BG, font=(UI_FONT, 9))
 
@@ -621,17 +630,15 @@ class UsageDashboard(tk.Tk):
             padx=8,
         )
         self.app_title_label.pack(side="left", fill="y")
-        self.collapse_button = self._caption_button(
-            brand,
-            COLLAPSE_ICON,
-            self.toggle_collapsed,
-            width=3,
-            hover_bg=PANEL,
-        )
-        self.collapse_button.pack(side="left", fill="y")
 
         self.caption_controls = tk.Frame(self.titlebar, bg=TITLE_BG)
         self.caption_controls.pack(side="right", fill="y")
+        self.collapse_button = self._caption_button(
+            self.caption_controls,
+            COLLAPSE_ICON,
+            self.toggle_collapsed,
+        )
+        self.collapse_button.pack(side="left", fill="y")
         self.pin_button = self._caption_button(self.caption_controls, PIN_ICON, self._toggle_topmost)
         self.minimize_button = self._caption_button(
             self.caption_controls,
@@ -979,20 +986,76 @@ class UsageDashboard(tk.Tk):
         self._refresh_running = False
         self.refresh_button.configure(text="刷新", state="normal", bg=ACCENT)
         if result.error is not None:
-            self._set_summary(f"读取失败：{result.error}\n请点击“立即刷新”重试。")
+            self._set_summary(f"读取失败：{result.error}\n请点击“刷新”重试。")
             return
         report = result.value
         if isinstance(report, UsageReport):
             self._last_report = report
             self._sync_model_options(report)
             self._update_tray_status(report)
+            self.connection_label.configure(text=f"北京时间 · 更新于 {datetime.now(BEIJING):%H:%M:%S}")
             self._render_summary(report)
 
     def _set_summary(self, text: str) -> None:
+        self._clear_quota_bars()
         self.summary.configure(state="normal")
         self.summary.delete("1.0", tk.END)
         self.summary.insert("1.0", text)
         self.summary.configure(state="disabled")
+
+    def _clear_quota_bars(self) -> None:
+        for canvas in self._quota_bars:
+            if canvas.winfo_exists():
+                canvas.destroy()
+        self._quota_bars.clear()
+
+    @staticmethod
+    def _quota_color(used_percent: float | None) -> str:
+        if used_percent is None:
+            return SUBTLE
+        if used_percent >= 90:
+            return QUOTA_CRITICAL_COLOR
+        if used_percent >= 70:
+            return QUOTA_WARN_COLOR
+        return ACCENT
+
+    def _make_quota_bar(self, used_percent: float | None) -> tk.Canvas:
+        canvas = tk.Canvas(
+            self.summary,
+            width=QUOTA_BAR_WIDTH,
+            height=QUOTA_BAR_HEIGHT,
+            bg=PANEL,
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.create_rectangle(0, 0, QUOTA_BAR_WIDTH, QUOTA_BAR_HEIGHT, fill=BORDER, outline="", tags="track")
+        if used_percent is not None:
+            filled = round(QUOTA_BAR_WIDTH * max(0.0, min(100.0, used_percent)) / 100)
+            filled = max(3, min(QUOTA_BAR_WIDTH, filled))
+            color = self._quota_color(used_percent)
+            canvas.create_rectangle(0, 0, filled, QUOTA_BAR_HEIGHT, fill=color, outline="", tags="fill")
+        self._quota_bars.append(canvas)
+        return canvas
+
+    def _summary_inner_width(self) -> int:
+        width = self.summary.winfo_width()
+        if width <= 50:
+            # Before the window is first mapped the reported width is 1;
+            # fall back to the default window size instead.
+            width = 430
+        return max(160, width - 30)
+
+    def _on_summary_resize(self, _event: tk.Event) -> None:
+        width = self.summary.winfo_width()
+        if width <= 50 or abs(width - self._summary_render_width) < 12:
+            return
+        self._summary_render_width = width
+        if self._last_report is not None:
+            self.after_idle(self._rerender_summary)
+
+    def _rerender_summary(self) -> None:
+        if self._last_report is not None:
+            self._render_summary(self._last_report)
 
     def _sync_model_options(self, report: UsageReport) -> None:
         options = model_options((report,))
@@ -1005,43 +1068,59 @@ class UsageDashboard(tk.Tk):
             self._render_summary(self._last_report)
 
     def _render_summary(self, report: UsageReport) -> None:
-        now = datetime.now(BEIJING)
         selected_model = self.model_var.get()
         usage = usage_for_model(report, selected_model)
         cache_rate_value = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
-        cache_rate = f"{cache_rate_value:.1%}"
         unpriced_models = _unpriced_models_for_selection(report, selected_model)
         cost_suffix = "*" if unpriced_models else ""
         token_label = "今日总 Token" if selected_model == ALL_MODELS_LABEL else "今日模型 Token"
+        inner_width = self._summary_inner_width()
+        self._summary_render_width = self.summary.winfo_width()
+        if self._dash_width is None:
+            measure_font = tkfont.Font(font=self.summary.cget("font"))
+            self._dash_width = max(4, measure_font.measure("─"))
+        # Keep the divider and the two-column tab stop proportional to the
+        # current window width so widening the window stays balanced.
+        self.summary.configure(tabs=(max(120, inner_width * 52 // 100),))
+        self._clear_quota_bars()
         self.summary.configure(state="normal")
         self.summary.delete("1.0", tk.END)
-        self.summary.insert(tk.END, f"更新于 {now:%H:%M:%S}  ·  {now:%Y-%m-%d}\n", "label")
-        self.summary.insert(tk.END, f"\n{token_label}\tAPI 参考估算\n", "label")
+        self.summary.insert(tk.END, f"{token_label}\tAPI 参考估算\n", "label")
         self.summary.insert(tk.END, format_tokens(usage.total_tokens), "hero")
         self.summary.insert(tk.END, "\t")
         self.summary.insert(tk.END, f"${_cost_for_model(report, selected_model):,.4f}{cost_suffix}\n", "hero_cost")
-        self.summary.insert(tk.END, "────────────────────────────────────\n", "divider")
-        self.summary.insert(tk.END, "输入 Token\t缓存输入 Token\n", "label")
-        self.summary.insert(
-            tk.END,
-            f"{format_tokens(usage.input_tokens)}\t{format_tokens(usage.cached_input_tokens)}\n",
-            "value",
+        dash_count = max(12, inner_width // self._dash_width - 1)
+        self.summary.insert(tk.END, "─" * dash_count + "\n", "divider")
+        # One dense stats strip instead of a two-column label/value grid.
+        strip = (
+            ("输入 ", format_tokens(usage.input_tokens)),
+            ("缓存输入 ", format_tokens(usage.cached_input_tokens)),
+            ("输出 ", format_tokens(usage.output_tokens)),
+            ("缓存率 ", f"{cache_rate_value:.1%}"),
         )
-        self.summary.insert(tk.END, "\n输出 Token\t缓存率\n", "label")
-        self.summary.insert(
-            tk.END,
-            f"{format_tokens(usage.output_tokens)}\t{cache_rate}\n",
-            "value",
-        )
-        for label, used_percent, reset_at in _quota_lines(report):
+        for index, (name, value) in enumerate(strip):
+            if index:
+                self.summary.insert(tk.END, "  ", "label")
+            self.summary.insert(tk.END, name, "label")
+            self.summary.insert(tk.END, value, "value")
+        self.summary.insert(tk.END, "\n")
+        for index, (label, used_percent, reset_at) in enumerate(_quota_lines(report)):
+            pct_tag = f"quota_pct_{index}"
+            self.summary.tag_configure(
+                pct_tag,
+                foreground=self._quota_color(used_percent),
+                font=("Cascadia Mono", 10, "bold"),
+            )
             used = "未知" if used_percent is None else f"{used_percent:.0f}%"
             reset = reset_at.strftime("%m-%d %H:%M") if reset_at else "未知"
-            self.summary.insert(tk.END, f"\n{label}   {_quota_bar(used_percent)}  {used}\n", "accent")
-            self.summary.insert(tk.END, f"下次重置 {reset}\n", "label")
+            self.summary.insert(tk.END, f"{label.replace('（全局）', '')}  ", "quota_label")
+            self.summary.window_create(tk.END, window=self._make_quota_bar(used_percent))
+            self.summary.insert(tk.END, f" {used}", pct_tag)
+            self.summary.insert(tk.END, f"   下次重置 {reset}\n", "label")
         self.summary.insert(
             tk.END,
             f"扫描 {report.files_with_usage}/{report.sessions_scanned} 个会话  ·  价格核对 {PRICE_CHECKED_ON:%Y-%m-%d}\n",
-            "label",
+            "footer",
         )
         if unpriced_models:
             self.summary.insert(tk.END, f"* 未计价模型：{', '.join(unpriced_models)}\n", "error")
@@ -1137,6 +1216,19 @@ class HistoryWindow(tk.Toplevel):
             padding=(7, 7),
         )
         style.map("History.Treeview.Heading", background=[("active", BORDER)])
+        style.configure(
+            "History.Vertical.TScrollbar",
+            background=CARD,
+            troughcolor=PANEL,
+            bordercolor=BORDER,
+            lightcolor=CARD,
+            darkcolor=CARD,
+            arrowcolor=MUTED,
+        )
+        style.map(
+            "History.Vertical.TScrollbar",
+            background=[("active", BORDER), ("pressed", SUBTLE)],
+        )
         top = ttk.Frame(self, style="History.TFrame", padding=(16, 14, 16, 12))
         top.pack(fill="x")
         ttk.Label(top, text="历史用量", style="HistoryTitle.TLabel").pack(side="left")
@@ -1196,7 +1288,12 @@ class HistoryWindow(tk.Toplevel):
             self.table.column(col, width=widths[col], anchor="center", stretch=True)
         self.table.tag_configure("total", background=CARD, foreground=ACCENT, font=(UI_FONT, 9, "bold"))
         self.table.tag_configure("even", background="#131821")
-        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        scrollbar = ttk.Scrollbar(
+            table_frame,
+            orient="vertical",
+            command=self.table.yview,
+            style="History.Vertical.TScrollbar",
+        )
         self.table.configure(yscrollcommand=scrollbar.set)
         self.table.pack(side="left", fill="x", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -1293,8 +1390,15 @@ class HistoryWindow(tk.Toplevel):
         selected_model = self.model_var.get()
         usages = [usage_for_model(report, selected_model) for report in reports]
         try:
+            import matplotlib as mpl
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
+
+            # Legend labels are Chinese; matplotlib's default DejaVu Sans has
+            # no CJK glyphs and would render them as empty boxes.
+            mpl.rcParams["font.family"] = "sans-serif"
+            mpl.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+            mpl.rcParams["axes.unicode_minus"] = False
 
             fig = Figure(figsize=(8.3, 3.0), dpi=95, facecolor=PANEL)
             self._figure = fig
@@ -1303,24 +1407,46 @@ class HistoryWindow(tk.Toplevel):
             costs = [_cost_for_model(report, selected_model) for report in reports]
             tokens = [usage.total_tokens / 1_000_000 for usage in usages]
             x_values = list(range(len(reports)))
-            ax.bar(x_values, costs, color="#343b4c", alpha=0.95, width=0.72)
+            ax.bar(x_values, costs, color="#c9a265", alpha=0.92, width=0.68, label="美元估价（USD）")
             ax.set_ylabel("USD", color=SUBTLE)
             ax.tick_params(colors=MUTED, labelsize=8)
             positions = tick_positions(len(labels))
+            # Horizontal date labels are readable for short ranges; tilt only
+            # when a long range would overlap.
+            rotation = 0 if len(labels) <= 10 else 30
+            anchor = "center" if rotation == 0 else "right"
             ax.set_xticks(
                 positions,
                 [labels[index] for index in positions],
-                rotation=30,
-                ha="right",
+                rotation=rotation,
+                ha=anchor,
             )
             ax.spines[:].set_color(BORDER)
             ax.grid(axis="y", color=BORDER, alpha=0.55, linewidth=0.7)
             ax.set_axisbelow(True)
             ax2 = ax.twinx()
-            ax2.plot(x_values, tokens, color=ACCENT, marker="o", markersize=3.5, linewidth=1.8)
+            ax2.plot(
+                x_values,
+                tokens,
+                color=ACCENT,
+                marker="o",
+                markersize=3.5,
+                linewidth=1.8,
+                label="Token 用量（百万）",
+            )
             ax2.set_ylabel("Million tokens", color=MUTED)
             ax2.tick_params(colors=MUTED, labelsize=8)
             ax2.spines[:].set_color(BORDER)
+            bar_handles, bar_labels = ax.get_legend_handles_labels()
+            line_handles, line_labels = ax2.get_legend_handles_labels()
+            ax.legend(
+                bar_handles + line_handles,
+                bar_labels + line_labels,
+                loc="upper left",
+                frameon=False,
+                fontsize=8,
+                labelcolor=MUTED,
+            )
             fig.tight_layout()
             canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
             canvas.draw()
