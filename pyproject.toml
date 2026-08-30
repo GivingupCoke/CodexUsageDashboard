@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-usage-dashboard"
-version = "1.1"
+dynamic = ["version"]
 description = "Local Beijing-day Codex usage dashboard for Windows"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,7 +18,10 @@ build = ["pyinstaller>=6,<7"]
 codex-usage-dashboard = "codex_usage_dashboard:main"
 
 [tool.setuptools]
-py-modules = ["codex_usage_dashboard", "usage_core"]
+py-modules = ["codex_usage_dashboard", "usage_core", "version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "version.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

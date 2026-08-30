@@ -50,7 +50,7 @@ Tkinter 主面板 + Matplotlib 历史图表
 
 ### 1. 读取本地会话日志
 
-程序递归扫描 `~/.codex/sessions` 下的 `.jsonl` 文件，只读取日志，不会修改会话文件。解析器只处理与统计有关的两类记录：
+程序按 `YYYY/MM/DD` 日期目录读取目标范围内的 `.jsonl` 文件，只读取日志，不会修改会话文件；首次需要补齐全局额度时，才会回溯扫描完整历史。解析器只处理与统计有关的两类记录：
 
 - `turn_context`：确定后续 Token 属于哪个模型
 - `event_msg / token_count`：读取累计 Token 快照和额度信息
@@ -218,8 +218,8 @@ dist\CodexUsageDashboard.exe
 示例：
 
 ```powershell
-git tag v1.0
-git push origin v1.0
+git tag v1.1
+git push origin v1.1
 ```
 
 也可以在 GitHub Actions 页面手动运行工作流。手动运行只生成可下载的构建产物，不自动创建正式 Release。

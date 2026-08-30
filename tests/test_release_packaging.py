@@ -12,7 +12,8 @@ def test_windows_release_build_is_reproducible():
     project_data = tomllib.loads(project)
 
     assert 'build = ["pyinstaller>=6,<7"]' in project
-    assert project_data["project"]["version"] == "1.1"
+    assert project_data["project"]["dynamic"] == ["version"]
+    assert 'version = {attr = "version.__version__"}' in project
     assert "python -m PyInstaller" in build_script
     assert "--onefile" in build_script
     assert "--windowed" in build_script
@@ -42,7 +43,7 @@ def test_windows_release_build_is_reproducible():
     assert "contents: read" in workflow
     assert "gh release" in workflow
     assert "path: dist/CodexUsageDashboard.exe" in workflow
-    assert "executable=\"./release/CodexUsageDashboard.exe\"" in workflow
+    assert 'executable="./release/CodexUsageDashboard.exe"' in workflow
     assert "Compress-Archive" not in workflow
     assert "windows-x64.zip" not in workflow
 
@@ -58,4 +59,4 @@ def test_readme_leads_with_double_click_release_instructions():
     assert "CodexUsageDashboard.exe" in readme[ordinary_user:developer]
     assert "无需安装 Python" in readme[ordinary_user:developer]
     assert "py -3.12 -m venv" not in readme[:developer]
-    assert "git tag v1.0" in readme
+    assert "git tag v1.1" in readme
