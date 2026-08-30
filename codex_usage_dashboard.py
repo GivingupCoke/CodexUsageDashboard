@@ -21,6 +21,7 @@ from usage_core import (
     collect_usage,
     format_tokens,
 )
+from version import __version__
 
 BG = "#0b0d12"
 TITLE_BG = "#0e1118"
@@ -42,7 +43,7 @@ ICON_FONT = "Segoe MDL2 Assets"
 UI_FONT = "Segoe UI Variable Text"
 DISPLAY_FONT = "Segoe UI Variable Display"
 APP_NAME = "Codex Usage"
-APP_VERSION = "1.1"
+APP_VERSION = __version__
 APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION}"
 APP_ICON_ICO = Path("assets") / "codex_usage_dashboard.ico"
 APP_ICON_PNG = Path("assets") / "codex_usage_dashboard.png"
@@ -1074,6 +1075,9 @@ class HistoryWindow(tk.Toplevel):
         self._reports: list[UsageReport] = []
         self._poll_after: str | None = None
         self._figure: Any | None = None
+        self._history_work_queue: queue.Queue[tuple[int, date]] = queue.Queue()
+        self._history_stop = threading.Event()
+        self._history_worker_thread: threading.Thread | None = None
         self._build_ui()
         self.after_idle(lambda: _set_native_titlebar_dark(self))
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -1220,9 +1224,26 @@ class HistoryWindow(tk.Toplevel):
         start = self._history_start()
         self._clear_chart()
         ttk.Label(self.chart_frame, text="正在读取历史日志…", foreground=MUTED, background=PANEL).pack(pady=30)
-        threading.Thread(target=self._worker, args=(request_id, start), daemon=True).start()
+        self._history_work_queue.put((request_id, start))
+        if self._history_worker_thread is None or not self._history_worker_thread.is_alive():
+            self._history_worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+            self._history_worker_thread.start()
         if self._poll_after is None:
             self._poll_after = self.after(50, self._poll_result)
+
+    def _worker_loop(self) -> None:
+        while not self._history_stop.is_set():
+            try:
+                request_id, start = self._history_work_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            # Collapse rapid period changes before starting the next scan.
+            while True:
+                try:
+                    request_id, start = self._history_work_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._worker(request_id, start)
 
     def _worker(self, request_id: int, start: date) -> None:
         try:
@@ -1364,6 +1385,7 @@ class HistoryWindow(tk.Toplevel):
         return "break"
 
     def _close(self) -> None:
+        self._history_stop.set()
         if self._poll_after is not None:
             self.after_cancel(self._poll_after)
             self._poll_after = None
