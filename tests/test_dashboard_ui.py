@@ -211,6 +211,49 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         root.destroy()
 
 
+def test_quota_orb_lifecycle_and_rings(monkeypatch):
+    current = make_report()
+    current.five_hour_used_percent = 40
+    monkeypatch.setattr(dashboard, "collect_usage", lambda *_args, **_kwargs: current)
+    root = create_dashboard()
+    root.withdraw()
+    try:
+        pump_until(root, lambda: root._last_report is current)
+        assert root._orb is None
+        assert not root._orb_visible()
+
+        root.enter_orb_mode()
+        orb = root._orb
+        assert orb is not None
+        assert root._orb_visible()
+
+        # 外环轨道+进度弧、内环轨道+进度弧、中心圆盘、中心字母
+        assert len(orb.canvas.find_all()) == 6
+        orb.update_report(current)
+        assert len(orb.canvas.find_all()) == 6
+
+        # 无额度数据时只画轨道，不画进度弧
+        unknown = make_report()
+        unknown.weekly_used_percent = None
+        unknown.five_hour_used_percent = None
+        orb.update_report(unknown)
+        assert len(orb.canvas.find_all()) == 4
+
+        root.close_orb()
+        assert root._orb is None
+        assert not root._orb_visible()
+
+        # 悬浮球开启时刷新数据会同步更新球面
+        root.enter_orb_mode()
+        updated = make_report()
+        updated.weekly_used_percent = 88
+        root._poll_refresh_result.__self__._orb.update_report(updated)
+        assert root._orb._report is updated
+        root.close_orb()
+    finally:
+        root.destroy()
+
+
 def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
     current = make_report()
     monkeypatch.setattr(dashboard, "collect_usage", lambda *_args, **_kwargs: current)
@@ -242,7 +285,11 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.pin_button.cget("bg") == dashboard.ACCENT
         assert root.history_button.cget("text") == "历史记录"
         assert root.refresh_button.cget("text") == "刷新"
-        assert root.history_button.cget("fg") == dashboard.TEXT
+        assert root.orb_button.cget("text") == "悬浮球"
+        assert root.history_button.cget("fg") == "#ffffff"
+        assert root.orb_button.cget("fg") == "#ffffff"
+        assert root.history_button.cget("bg") == dashboard.ACCENT
+        assert root.orb_button.cget("bg") == dashboard.ACCENT
         assert root.refresh_button.cget("fg") == "#ffffff"
         assert root.history_button.bind("<Enter>")
         assert root.history_button.bind("<Leave>")
@@ -251,14 +298,12 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.refresh_button.bind("<Leave>")
         assert root.refresh_button.bind("<ButtonPress-1>")
 
-        root._set_action_button_background(root.history_button, dashboard.BORDER)
-        assert root.history_button.cget("bg") == dashboard.BORDER
-        root._set_action_button_background(root.history_button, dashboard.ACTION_PRESSED_BG)
-        assert root.history_button.cget("bg") == dashboard.ACTION_PRESSED_BG
-        root._set_action_button_background(root.history_button, dashboard.BORDER)
-        assert root.history_button.cget("bg") == dashboard.BORDER
-        root._set_action_button_background(root.history_button, dashboard.CARD)
-        assert root.history_button.cget("bg") == dashboard.CARD
+        root._set_action_button_background(root.history_button, dashboard.ACCENT_HOVER)
+        assert root.history_button.cget("bg") == dashboard.ACCENT_HOVER
+        root._set_action_button_background(root.history_button, dashboard.ACCENT_PRESSED_BG)
+        assert root.history_button.cget("bg") == dashboard.ACCENT_PRESSED_BG
+        root._set_action_button_background(root.history_button, dashboard.ACCENT)
+        assert root.history_button.cget("bg") == dashboard.ACCENT
 
         root._set_action_button_background(root.refresh_button, dashboard.ACCENT_HOVER)
         assert root.refresh_button.cget("bg") == dashboard.ACCENT_HOVER

@@ -259,6 +259,203 @@ def _set_native_titlebar_dark(window: tk.Misc) -> None:
         return
 
 
+def _enable_native_caption_buttons(window: tk.Misc) -> bool:
+    """给原生标题栏的窗口补上最小化/最大化按钮（最大化悬停可呼出贴靠布局）。
+
+    Tk 在窗口映射之后才把 Toplevel 装进带标题栏的外层包装窗口；父窗口
+    尚不存在时返回 False，由调用方稍后重试。
+    """
+    if sys.platform != "win32" or not window.winfo_exists():
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowPos.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = ctypes.c_bool
+        parent = user32.GetParent(window.winfo_id())
+        if not parent:
+            return False
+        handle = int(parent)
+        style = user32.GetWindowLongPtrW(handle, -16)
+        if not (style & WS_MINIMIZEBOX and style & WS_MAXIMIZEBOX):
+            user32.SetWindowLongPtrW(handle, -16, style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            # 历史窗口是 transient，补一个任务栏按钮，最小化之后才有地方还原。
+            ex_style = user32.GetWindowLongPtrW(handle, -20)
+            user32.SetWindowLongPtrW(handle, -20, (ex_style & ~0x00000080) | 0x00040000)
+            user32.SetWindowPos(handle, None, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0020)
+        return True
+    except Exception:
+        # 纯界面增强，失败时窗口保持默认行为。
+        return False
+
+
+class QuotaOrb:
+    """可拖动的圆形悬浮球：外环显示一周额度，内环显示 5 小时额度。"""
+
+    SIZE = 76
+    OUTER_RADIUS = 33
+    OUTER_WIDTH = 7
+    INNER_RADIUS = 22
+    INNER_WIDTH = 6
+    CORE_RADIUS = 13
+
+    def __init__(self, dashboard: UsageDashboard) -> None:
+        self.dashboard = dashboard
+        self.window = tk.Toplevel(dashboard)
+        self.window.title(f"{APP_DISPLAY_NAME} · 悬浮额度球")
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.configure(bg=BG)
+        self.window.resizable(False, False)
+        # 与背景同色的像素变为透明且可点击穿透，圆环之外只剩桌面。
+        self.window.attributes("-transparentcolor", BG)
+        self.canvas = tk.Canvas(
+            self.window,
+            width=self.SIZE,
+            height=self.SIZE,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.canvas.pack()
+        self._menu = tk.Menu(
+            self.window,
+            tearoff=0,
+            bg=CARD,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            bd=0,
+            relief="flat",
+        )
+        self._drag_origin: tuple[int, int, int, int] | None = None
+        self._dragged = False
+        self._report: UsageReport | None = dashboard._last_report
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Button-3>", self._show_menu)
+        screen_right = self.window.winfo_screenwidth()
+        screen_bottom = self.window.winfo_screenheight()
+        self.window.geometry(f"{self.SIZE}x{self.SIZE}+{screen_right - 140}+{screen_bottom - 220}")
+        self._draw()
+
+    def show(self) -> None:
+        self.window.deiconify()
+        self.window.lift()
+        self._draw()
+
+    def hide(self) -> None:
+        self.window.withdraw()
+
+    def close(self) -> None:
+        self.window.destroy()
+
+    def update_report(self, report: UsageReport | None) -> None:
+        self._report = report
+        if self.window.winfo_viewable():
+            self._draw()
+
+    def open_main(self) -> None:
+        self.hide()
+        self.dashboard._show_main_window()
+        self.dashboard._sync_tray_menu()
+
+    def _draw_ring(self, radius: int, width: int, used_percent: float | None) -> None:
+        canvas = self.canvas
+        center = self.SIZE / 2
+        bbox = (center - radius, center - radius, center + radius, center + radius)
+        canvas.create_oval(*bbox, outline=BORDER, width=width)
+        if used_percent is None or used_percent <= 0:
+            return
+        percent = max(0.0, min(100.0, used_percent))
+        canvas.create_arc(
+            *bbox,
+            start=90,
+            extent=-percent * 3.6,
+            style="arc",
+            outline=UsageDashboard._quota_color(used_percent),
+            width=width,
+        )
+
+    def _draw(self) -> None:
+        canvas = self.canvas
+        canvas.delete("all")
+        report = self._report
+        weekly = report.weekly_used_percent if report else None
+        five_hour = report.five_hour_used_percent if report else None
+        # 外环一周额度，内环 5 小时额度；中心是应用标识。
+        self._draw_ring(self.OUTER_RADIUS, self.OUTER_WIDTH, weekly)
+        self._draw_ring(self.INNER_RADIUS, self.INNER_WIDTH, five_hour)
+        center = self.SIZE / 2
+        canvas.create_oval(
+            center - self.CORE_RADIUS,
+            center - self.CORE_RADIUS,
+            center + self.CORE_RADIUS,
+            center + self.CORE_RADIUS,
+            fill=TITLE_BG,
+            outline="",
+        )
+        canvas.create_text(center, center, text="C", fill=ACCENT, font=(DISPLAY_FONT, 9, "bold"))
+
+    def _show_menu(self, event) -> None:
+        menu = self._menu
+        menu.delete(0, "end")
+        report = self._report
+        weekly = report.weekly_used_percent if report else None
+        five_hour = report.five_hour_used_percent if report else None
+
+        def percent(value: float | None) -> str:
+            return "未知" if value is None else f"{value:.0f}%"
+
+        total = format_tokens(report.total_tokens) if report else "读取中…"
+        menu.add_command(label=f"今日 {total}", state="disabled", foreground=MUTED)
+        menu.add_command(label=f"5 小时额度 {percent(five_hour)}", state="disabled", foreground=MUTED)
+        menu.add_command(label=f"一周额度 {percent(weekly)}", state="disabled", foreground=MUTED)
+        menu.add_separator()
+        menu.add_command(label="进入主界面", command=self.open_main)
+        menu.add_command(label="关闭悬浮球", command=self.dashboard.close_orb)
+        menu.add_command(label="退出程序", command=self.dashboard._exit_application)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_press(self, event) -> None:
+        self._drag_origin = (event.x_root, event.y_root, self.window.winfo_x(), self.window.winfo_y())
+        self._dragged = False
+
+    def _on_drag(self, event) -> None:
+        if self._drag_origin is None:
+            return
+        start_x, start_y, window_x, window_y = self._drag_origin
+        delta_x = event.x_root - start_x
+        delta_y = event.y_root - start_y
+        if abs(delta_x) > 4 or abs(delta_y) > 4:
+            self._dragged = True
+        if self._dragged:
+            self.window.geometry(f"+{window_x + delta_x}+{window_y + delta_y}")
+
+    def _on_release(self, _event) -> None:
+        was_dragged = self._dragged
+        self._drag_origin = None
+        self._dragged = False
+        if not was_dragged:
+            self.open_main()
+
+
 class UsageDashboard(tk.Tk):
     def __init__(self) -> None:
         self._set_windows_app_identity()
@@ -282,6 +479,7 @@ class UsageDashboard(tk.Tk):
         self._taskbar_registration_forced = False
         self._taskbar_registration_attempts = 0
         self._tray_icon: Any | None = None
+        self._orb: QuotaOrb | None = None
         self._tray_status_lines = [
             "今日总 Token：读取中…",
             "API 参考估算：读取中…",
@@ -372,6 +570,10 @@ class UsageDashboard(tk.Tk):
                 ),
                 pystray.MenuItem("刷新", lambda _icon, _item: self.after(0, self.refresh)),
                 pystray.MenuItem("历史记录", lambda _icon, _item: self.after(0, self._open_history_from_tray)),
+                pystray.MenuItem(
+                    lambda _item: "✓ 悬浮球" if self._orb_visible() else "悬浮球",
+                    lambda _icon, _item: self.after(0, self.toggle_orb_from_tray),
+                ),
                 pystray.MenuItem("退出", lambda _icon, _item: self.after(0, self._exit_application)),
             )
             self._tray_icon = pystray.Icon(
@@ -437,6 +639,9 @@ class UsageDashboard(tk.Tk):
         self.withdraw()
 
     def _exit_application(self) -> None:
+        if self._orb is not None:
+            self._orb.close()
+            self._orb = None
         if self._history_window is not None and self._history_window.winfo_exists():
             self._history_window._close()
         if self._tray_icon is not None:
@@ -547,12 +752,12 @@ class UsageDashboard(tk.Tk):
             controls,
             text="历史记录",
             command=self.open_history,
-            bg=CARD,
-            fg=TEXT,
-            activebackground=ACTION_PRESSED_BG,
-            activeforeground=TEXT,
-            disabledforeground=SUBTLE,
-            font=(UI_FONT, 9),
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground=ACCENT_PRESSED_BG,
+            activeforeground="#ffffff",
+            disabledforeground="#d8dcff",
+            font=(UI_FONT, 9, "bold"),
             relief="flat",
             bd=0,
             padx=11,
@@ -564,9 +769,34 @@ class UsageDashboard(tk.Tk):
         self.history_button.pack(side="left")
         self._bind_action_button_feedback(
             self.history_button,
-            normal_bg=CARD,
-            hover_bg=BORDER,
-            pressed_bg=ACTION_PRESSED_BG,
+            normal_bg=ACCENT,
+            hover_bg=ACCENT_HOVER,
+            pressed_bg=ACCENT_PRESSED_BG,
+        )
+        self.orb_button = tk.Button(
+            controls,
+            text="悬浮球",
+            command=self.enter_orb_mode,
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground=ACCENT_PRESSED_BG,
+            activeforeground="#ffffff",
+            disabledforeground="#d8dcff",
+            font=(UI_FONT, 9, "bold"),
+            relief="flat",
+            bd=0,
+            padx=11,
+            pady=4,
+            highlightthickness=0,
+            takefocus=False,
+            cursor="hand2",
+        )
+        self.orb_button.pack(side="left", padx=(8, 0))
+        self._bind_action_button_feedback(
+            self.orb_button,
+            normal_bg=ACCENT,
+            hover_bg=ACCENT_HOVER,
+            pressed_bg=ACCENT_PRESSED_BG,
         )
         self.refresh_button = tk.Button(
             controls,
@@ -604,6 +834,8 @@ class UsageDashboard(tk.Tk):
         self.summary.tag_configure("footer", foreground=MUTED, font=(UI_FONT, 9), spacing1=8)
         self.summary.tag_configure("divider", foreground=BORDER)
         self.summary.tag_configure("error", foreground=ERROR, background=WARNING_BG, font=(UI_FONT, 9))
+        self.bind("<Configure>", self._track_window_metrics, add="+")
+        self._track_window_metrics()
 
     def _build_titlebar(self) -> None:
         self.titlebar = tk.Frame(self, bg=TITLE_BG, height=40, highlightthickness=0)
@@ -799,6 +1031,8 @@ class UsageDashboard(tk.Tk):
                 ctypes.c_uint,
             ]
             user32.SetWindowPos.restype = ctypes.c_bool
+            user32.GetWindowThreadProcessId.argtypes = [hwnd_type, ctypes.c_void_p]
+            user32.GetWindowThreadProcessId.restype = ctypes.c_uint
             inner_handle = self.winfo_id()
             handle = (
                 user32.FindWindowW(None, self.title())
@@ -806,6 +1040,12 @@ class UsageDashboard(tk.Tk):
                 or user32.GetParent(inner_handle)
                 or inner_handle
             )
+            # FindWindowW 按标题匹配，可能撞到同名的外部窗口；样式与窗口
+            # 过程操作只允许作用于当前进程自己的窗口。
+            process_id = ctypes.c_uint(0)
+            user32.GetWindowThreadProcessId(handle, ctypes.byref(process_id))
+            if process_id.value != ctypes.windll.kernel32.GetCurrentProcessId():
+                handle = user32.GetAncestor(inner_handle, 2) or user32.GetParent(inner_handle) or inner_handle
             handle = ctypes.c_void_p(handle)
             self._window_handle = handle.value
             get_window_long = user32.GetWindowLongPtrW
@@ -867,6 +1107,16 @@ class UsageDashboard(tk.Tk):
                 pass
         except (AttributeError, OSError, tk.TclError):
             self._window_handle = None
+
+    def _track_window_metrics(self, _event=None) -> None:
+        """贴靠布局（Win+Z）或系统命令改变窗口状态时保持按钮图标同步。"""
+        try:
+            zoomed = self.state() == "zoomed"
+            if zoomed != self._maximized:
+                self._maximized = zoomed
+                self.maximize_button.configure(text=RESTORE_ICON if zoomed else MAXIMIZE_ICON)
+        except tk.TclError:
+            pass
 
     def _start_drag(self, event) -> None:
         if self._maximized:
@@ -995,6 +1245,8 @@ class UsageDashboard(tk.Tk):
             self._update_tray_status(report)
             self.connection_label.configure(text=f"北京时间 · 更新于 {datetime.now(BEIJING):%H:%M:%S}")
             self._render_summary(report)
+            if self._orb is not None:
+                self._orb.update_report(report)
 
     def _set_summary(self, text: str) -> None:
         self._clear_quota_bars()
@@ -1136,6 +1388,39 @@ class UsageDashboard(tk.Tk):
             return
         self._history_window = HistoryWindow(self, self.sessions_root, self._last_report)
 
+    def enter_orb_mode(self) -> None:
+        self._ensure_orb().show()
+        self.withdraw()
+
+    def close_orb(self) -> None:
+        if self._orb is not None:
+            self._orb.close()
+            self._orb = None
+            self._sync_tray_menu()
+
+    def toggle_orb_from_tray(self) -> None:
+        if self._orb_visible():
+            self.close_orb()
+        else:
+            self._ensure_orb().show()
+            self._sync_tray_menu()
+
+    def _orb_visible(self) -> bool:
+        return self._orb is not None and bool(self._orb.window.winfo_viewable())
+
+    def _ensure_orb(self) -> QuotaOrb:
+        if self._orb is None:
+            self._orb = QuotaOrb(self)
+            self._sync_tray_menu()
+        return self._orb
+
+    def _sync_tray_menu(self) -> None:
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.update_menu()
+            except (OSError, ValueError):
+                pass
+
 
 class HistoryWindow(tk.Toplevel):
     def __init__(self, parent: UsageDashboard, sessions_root: Path, current: UsageReport | None):
@@ -1159,6 +1444,11 @@ class HistoryWindow(tk.Toplevel):
         self._history_worker_thread: threading.Thread | None = None
         self._build_ui()
         self.after_idle(lambda: _set_native_titlebar_dark(self))
+        self._caption_button_attempts = 0
+        self.after(150, self._enable_caption_buttons_with_retry)
+        # 主窗口的任务栏注册等流程会让 Tk 重建本窗口的包装 HWND，样式随之
+        # 丢失；重新映射时再补一次。
+        self.bind("<Map>", self._reapply_caption_buttons, add="+")
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.load_history()
 
@@ -1298,6 +1588,19 @@ class HistoryWindow(tk.Toplevel):
         self.table.pack(side="left", fill="x", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.table.bind("<Control-c>", self._copy_selected_rows)
+
+    def _enable_caption_buttons_with_retry(self) -> None:
+        """Tk 包装窗口就绪前 GetParent 拿不到标题栏窗口，间隔重试。"""
+        if not self.winfo_exists():
+            return
+        self._caption_button_attempts += 1
+        if _enable_native_caption_buttons(self) or self._caption_button_attempts >= 10:
+            return
+        self.after(150, self._enable_caption_buttons_with_retry)
+
+    def _reapply_caption_buttons(self, _event=None) -> None:
+        if self.winfo_exists():
+            _enable_native_caption_buttons(self)
 
     def _history_start(self) -> date:
         today = datetime.now(BEIJING).date()
