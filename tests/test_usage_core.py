@@ -133,6 +133,24 @@ def test_malformed_usage_is_counted_without_aborting_collection(tmp_path: Path):
     assert result.parse_errors == 1
 
 
+def test_invalid_timestamp_does_not_advance_snapshot_baseline(tmp_path: Path):
+    write_session(
+        tmp_path,
+        [
+            event("2026-08-24T00:00:00Z", "turn_context", {"model": "gpt-5.6-sol"}),
+            token_event("2026-08-24T00:00:01Z", 100, 50, 10),
+            token_event("not-a-timestamp", 160, 80, 20),
+            token_event("2026-08-24T00:01:01Z", 220, 110, 30),
+        ],
+    )
+
+    result = collect_usage(tmp_path, date(2026, 8, 24))
+
+    assert result.input_tokens == 220
+    assert result.output_tokens == 30
+    assert result.parse_errors == 1
+
+
 def test_partial_last_line_is_retried_after_append(tmp_path: Path):
     session = write_session(
         tmp_path,
@@ -315,6 +333,28 @@ def test_collect_usage_includes_cross_midnight_session_with_stale_mtime(tmp_path
     assert result.sessions_scanned == 1
     assert result.files_with_usage == 1
     assert result.total_tokens == 1_100
+
+
+def test_range_scan_skips_old_date_directories(tmp_path: Path):
+    write_session(
+        tmp_path,
+        [
+            event("2026-08-24T00:00:00Z", "turn_context", {"model": "gpt-5.6-sol"}),
+            token_event("2026-08-24T00:00:01Z", 100, 50, 10),
+        ],
+        name="current.jsonl",
+    )
+    old_session = tmp_path / "2026" / "08" / "01" / "old.jsonl"
+    old_session.parent.mkdir(parents=True, exist_ok=True)
+    old_session.write_text(
+        json.dumps(token_event("2026-08-01T00:00:01Z", 900, 450, 90)) + "\n",
+        encoding="utf-8",
+    )
+
+    result = collect_usage(tmp_path, date(2026, 8, 24))
+
+    assert result.sessions_scanned == 1
+    assert result.total_tokens == 110
 
 
 def test_history_parse_errors_are_not_multiplied_across_days(tmp_path: Path):

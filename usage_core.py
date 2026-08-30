@@ -162,6 +162,7 @@ class _SessionCacheEntry:
 
 
 _SESSION_CACHE: dict[Path, _SessionCacheEntry] = {}
+_GLOBAL_QUOTA_CACHE: dict[Path, UsageReport] = {}
 _CACHE_LOCK = threading.RLock()
 
 
@@ -169,6 +170,7 @@ def clear_usage_cache() -> None:
     """Clear the in-process JSONL parse cache."""
     with _CACHE_LOCK:
         _SESSION_CACHE.clear()
+        _GLOBAL_QUOTA_CACHE.clear()
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -191,12 +193,17 @@ def format_tokens(value: int) -> str:
     return f"{value / 1_000_000_000:.2f}B"
 
 
-def _session_files(root: Path, start_utc: datetime) -> Iterable[tuple[Path, object]]:
+def _session_files(
+    root: Path,
+    start_utc: datetime,
+    last_utc: datetime | None = None,
+) -> Iterable[tuple[Path, object]]:
     if not root.exists():
         return ()
 
     cutoff_timestamp = start_utc.timestamp()
     earliest_session_day = start_utc.astimezone(BEIJING).date() - timedelta(days=1)
+    latest_session_day = last_utc.astimezone(BEIJING).date() if last_utc is not None else None
 
     def session_folder_day(path: Path) -> date | None:
         try:
@@ -205,19 +212,37 @@ def _session_files(root: Path, start_utc: datetime) -> Iterable[tuple[Path, obje
         except (TypeError, ValueError):
             return None
 
+    def inspect(paths: Iterable[Path]) -> Iterable[tuple[Path, object]]:
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if path.is_file():
+                yield path, stat
+
     def candidates() -> Iterable[tuple[Path, object]]:
         try:
-            paths = root.rglob("*.jsonl")
-            for path in paths:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
+            # Session logs are stored under YYYY/MM/DD. Restrict normal range
+            # reads to those folders instead of walking the complete history.
+            if latest_session_day is not None:
+                day = earliest_session_day
+                seen: set[Path] = set()
+                while day <= latest_session_day:
+                    folder = root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+                    if folder.is_dir():
+                        for path, stat in inspect(folder.rglob("*.jsonl")):
+                            if path not in seen:
+                                seen.add(path)
+                                yield path, stat
+                    day += timedelta(days=1)
+                return
+
+            # A caller without an end date requests the complete history. This
+            # path is only used to bootstrap the account-global quota cache.
+            for path, stat in inspect(root.rglob("*.jsonl")):
                 folder_day = session_folder_day(path)
-                if path.is_file() and (
-                    stat.st_mtime >= cutoff_timestamp
-                    or (folder_day is not None and folder_day >= earliest_session_day)
-                ):
+                if stat.st_mtime >= cutoff_timestamp or (folder_day is not None and folder_day >= earliest_session_day):
                     yield path, stat
         except OSError:
             return
@@ -339,13 +364,17 @@ def _process_row(entry: _SessionCacheEntry, row: object) -> None:
     if current is None:
         return
 
-    delta = _delta(current, entry.previous)
-    entry.previous = current
     try:
         timestamp = parse_timestamp(str(row.get("timestamp", "")))
     except (TypeError, ValueError):
         _record_error(entry, row)
         return
+
+    # Do not advance the cumulative baseline for an unusable event. Otherwise
+    # a malformed timestamp can make the next valid snapshot permanently lose
+    # the increment between the two snapshots.
+    delta = _delta(current, entry.previous)
+    entry.previous = current
     day = timestamp.astimezone(BEIJING).date()
     summary = entry.days.setdefault(day, _DaySummary())
     if sum(delta.values()):
@@ -406,6 +435,12 @@ def _load_session(path: Path, stat: object) -> _SessionCacheEntry:
     return entry
 
 
+def _update_global_quota_cache(root: Path, entry: _SessionCacheEntry) -> None:
+    cached = _GLOBAL_QUOTA_CACHE.setdefault(root, UsageReport(day=date.min))
+    for summary in entry.days.values():
+        _merge_rate_limits(cached, summary)
+
+
 def _merge_rate_limits(report: UsageReport, summary: _DaySummary) -> None:
     if summary.rate_limit_observed_at is not None and (
         report._rate_limit_observed_at is None or summary.rate_limit_observed_at >= report._rate_limit_observed_at
@@ -456,7 +491,9 @@ def _collect_range(sessions_root: str | Path, first_day: date, last_day: date) -
         for i in range((last_day - first_day).days + 1)
     }
     start = day_bounds(first_day)[0]
-    paths = list(_session_files(Path(sessions_root), start))
+    root = Path(sessions_root)
+    end = day_bounds(last_day)[0]
+    paths = list(_session_files(root, start, end))
     for report in reports.values():
         report.sessions_scanned = len(paths)
 
@@ -472,20 +509,32 @@ def _collect_range(sessions_root: str | Path, first_day: date, last_day: date) -
                 summary = entry.days.get(day)
                 if summary is not None:
                     _merge_day(report, summary)
+            _update_global_quota_cache(root, entry)
 
         # Quota data is account-global and can remain valid after midnight,
         # while today's Token total must stay limited to today's files. If no
         # current-day file supplied a quota snapshot, use the latest snapshot
         # found in the complete local log history without merging old usage.
         if not any(_has_rate_limits(report) for report in reports.values()):
-            all_paths = _session_files(Path(sessions_root), datetime(1970, 1, 1, tzinfo=UTC))
-            for path, stat in all_paths:
-                try:
-                    entry = _load_session(path, stat)
-                except OSError:
-                    continue
-                for summary in entry.days.values():
-                    _merge_rate_limits(reports[first_day], summary)
+            global_quota = _GLOBAL_QUOTA_CACHE.get(root)
+            if global_quota is None:
+                all_paths = _session_files(root, datetime(1970, 1, 1, tzinfo=UTC))
+                for path, stat in all_paths:
+                    try:
+                        entry = _load_session(path, stat)
+                    except OSError:
+                        continue
+                    _update_global_quota_cache(root, entry)
+                global_quota = _GLOBAL_QUOTA_CACHE.get(root)
+            if global_quota is not None:
+                reports[first_day].weekly_used_percent = global_quota.weekly_used_percent
+                reports[first_day].weekly_reset_at = global_quota.weekly_reset_at
+                reports[first_day].rate_limit_window_minutes = global_quota.rate_limit_window_minutes
+                reports[first_day].five_hour_used_percent = global_quota.five_hour_used_percent
+                reports[first_day].five_hour_reset_at = global_quota.five_hour_reset_at
+                reports[first_day]._rate_limit_observed_at = global_quota._rate_limit_observed_at
+                reports[first_day]._weekly_rate_limit_observed_at = global_quota._weekly_rate_limit_observed_at
+                reports[first_day]._five_hour_rate_limit_observed_at = global_quota._five_hour_rate_limit_observed_at
 
     for report in reports.values():
         for usage in report.by_model.values():
