@@ -414,6 +414,15 @@ class QuotaOrb:
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
 
+        # Windows 的透明色键不支持半透明边缘；实体底盘承接柔光，避免桌面上出现黑碎边。
+        plate_radius = 59 * scale
+        draw.ellipse(
+            (center - plate_radius, center - plate_radius, center + plate_radius, center + plate_radius),
+            fill=self._rgba("#070e19"),
+            outline=self._rgba("#34445e"),
+            width=scale,
+        )
+
         # 外缘刻度让球体更像精密仪表，同时保持静态，避免后台持续占用 CPU。
         tick_color = self._rgba("#586a86", 190 if self._hovered else 135)
         for index in range(24):
@@ -518,7 +527,13 @@ class QuotaOrb:
         glow = glow.filter(ImageFilter.GaussianBlur((3.8 if self._hovered else 3.0) * scale))
         image = Image.alpha_composite(image, glow)
         image = Image.alpha_composite(image, crisp)
-        return image.resize((self.SIZE, self.SIZE), Image.Resampling.LANCZOS)
+        image = image.resize((self.SIZE, self.SIZE), Image.Resampling.LANCZOS)
+        color_key_mask = Image.new("L", image.size, 0)
+        ImageDraw.Draw(color_key_mask).ellipse(
+            (1, 1, self.SIZE - 2, self.SIZE - 2), fill=255
+        )
+        image.putalpha(color_key_mask)
+        return image
 
     def _draw(self) -> None:
         canvas = self.canvas

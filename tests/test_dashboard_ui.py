@@ -234,7 +234,7 @@ def test_quota_orb_lifecycle_and_rings(monkeypatch):
         assert root.state() == "withdrawn"
         assert dashboard.QuotaOrb.SIZE == 120
         rendered = orb._render_art(49, 40)
-        alpha_values = {alpha for *_rgb, alpha in rendered.getdata()}
+        alpha_values = set(rendered.getchannel("A").tobytes())
         assert alpha_values <= {0, 255}
         assert rendered.getpixel((0, 0))[3] == 0
 
