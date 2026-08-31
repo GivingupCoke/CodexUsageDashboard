@@ -377,7 +377,7 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root.destroy()
 
 
-def test_windows_titlebar_drag_posts_native_move_message(monkeypatch):
+def test_windows_titlebar_drag_posts_native_move_command(monkeypatch):
     root = create_dashboard()
     root.withdraw()
     calls = []
@@ -406,7 +406,7 @@ def test_windows_titlebar_drag_posts_native_move_message(monkeypatch):
         assert root._start_drag(event) == "break"
         assert calls == [
             ("ReleaseCapture",),
-            ("PostMessageW", 1234, dashboard.WM_NCLBUTTONDOWN, dashboard.HTCAPTION, 0),
+            ("PostMessageW", 1234, dashboard.WM_SYSCOMMAND, dashboard.SC_MOVE | dashboard.HTCAPTION, 0),
         ]
         assert user32.ReleaseCapture.argtypes == []
         assert user32.ReleaseCapture.restype is ctypes.c_bool
