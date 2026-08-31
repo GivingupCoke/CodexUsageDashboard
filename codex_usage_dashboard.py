@@ -1136,9 +1136,21 @@ class UsageDashboard(tk.Tk):
                 # stale DWM/Tk frames visible while the window is moving.
                 self._drag_origin = None
                 user32 = ctypes.windll.user32
+                user32.ReleaseCapture.argtypes = []
+                user32.ReleaseCapture.restype = ctypes.c_bool
+                user32.PostMessageW.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_size_t,
+                    ctypes.c_ssize_t,
+                ]
+                user32.PostMessageW.restype = ctypes.c_bool
                 user32.ReleaseCapture()
-                user32.SendMessageW(self._window_handle, WM_NCLBUTTONDOWN, HTCAPTION, 0)
-                return "break"
+                # SendMessageW enters the native move loop before ctypes has
+                # reacquired the GIL, so a nested Tk callback can terminate
+                # Python. Queue the same message and return to Tk first.
+                if user32.PostMessageW(self._window_handle, WM_NCLBUTTONDOWN, HTCAPTION, 0):
+                    return "break"
             except (AttributeError, OSError):
                 pass
 
