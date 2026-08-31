@@ -62,7 +62,6 @@ MINIMIZE_ICON = "\ue921"
 MAXIMIZE_ICON = "\ue922"
 RESTORE_ICON = "\ue923"
 CLOSE_ICON = "\ue8bb"
-WM_NCLBUTTONDOWN = 0x00A1
 WM_SYSCOMMAND = 0x0112
 HTCAPTION = 2
 SC_MOVE = 0xF010
@@ -1215,7 +1214,7 @@ class UsageDashboard(tk.Tk):
                 menu, 0x0100 | 0x0002, event.x_root, event.y_root, 0, self._window_handle, None
             )
             if command:
-                user32.PostMessageW(self._window_handle, 0x0112, command, 0)
+                user32.PostMessageW(self._window_handle, WM_SYSCOMMAND, command, 0)
         except (AttributeError, OSError):
             return
 
