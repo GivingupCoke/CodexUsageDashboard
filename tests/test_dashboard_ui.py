@@ -377,28 +377,46 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         root.destroy()
 
 
-def test_windows_titlebar_drag_uses_native_move_loop(monkeypatch):
+def test_windows_titlebar_drag_posts_native_move_message(monkeypatch):
     root = create_dashboard()
     root.withdraw()
     calls = []
 
+    class FakeFunction:
+        def __init__(self, name):
+            self.name = name
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            calls.append((self.name, *args))
+            return True
+
     class FakeUser32:
-        def ReleaseCapture(self):
-            calls.append(("ReleaseCapture",))
+        def __init__(self):
+            self.ReleaseCapture = FakeFunction("ReleaseCapture")
+            self.PostMessageW = FakeFunction("PostMessageW")
 
-        def SendMessageW(self, handle, message, hit_test, parameter):
-            calls.append(("SendMessageW", handle, message, hit_test, parameter))
-
+    user32 = FakeUser32()
     monkeypatch.setattr(dashboard.sys, "platform", "win32")
-    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=FakeUser32()))
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32))
     root._window_handle = 1234
     event = SimpleNamespace(x_root=100, y_root=100)
     try:
         assert root._start_drag(event) == "break"
         assert calls == [
             ("ReleaseCapture",),
-            ("SendMessageW", 1234, dashboard.WM_NCLBUTTONDOWN, dashboard.HTCAPTION, 0),
+            ("PostMessageW", 1234, dashboard.WM_NCLBUTTONDOWN, dashboard.HTCAPTION, 0),
         ]
+        assert user32.ReleaseCapture.argtypes == []
+        assert user32.ReleaseCapture.restype is ctypes.c_bool
+        assert user32.PostMessageW.argtypes == [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        assert user32.PostMessageW.restype is ctypes.c_bool
         assert root._drag_origin is None
     finally:
         root.destroy()
