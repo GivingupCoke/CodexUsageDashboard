@@ -233,6 +233,10 @@ def test_quota_orb_lifecycle_and_rings(monkeypatch):
         assert root._orb_visible()
         assert root.state() == "withdrawn"
         assert dashboard.QuotaOrb.SIZE == 120
+        rendered = orb._render_art(49, 40)
+        alpha_values = {alpha for *_rgb, alpha in rendered.getdata()}
+        assert alpha_values <= {0, 255}
+        assert rendered.getpixel((0, 0))[3] == 0
 
         assert len(orb.canvas.find_withtag("orb_art")) == 1
         assert orb.canvas.itemcget("weekly_value", "text") == "49%"
