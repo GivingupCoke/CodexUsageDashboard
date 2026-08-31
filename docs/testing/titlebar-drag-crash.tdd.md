@@ -33,6 +33,7 @@ Checkpoints:
 - `5d2bab2 fix: avoid reentrant titlebar drag crash`
 - `f6a80f6 test: require asynchronous system move command`
 - `e2e7d9a fix: post asynchronous system move command`
+- `59fc932 refactor: reuse native system command constant`
 
 ## Test specification
 
