@@ -415,7 +415,7 @@ class QuotaOrb:
         draw = ImageDraw.Draw(image)
 
         # Windows 的透明色键不支持半透明边缘；实体底盘承接柔光，避免桌面上出现黑碎边。
-        plate_radius = 59 * scale
+        plate_radius = 54 * scale
         draw.ellipse(
             (center - plate_radius, center - plate_radius, center + plate_radius, center + plate_radius),
             fill=self._rgba("#070e19"),
@@ -529,9 +529,26 @@ class QuotaOrb:
         image = Image.alpha_composite(image, crisp)
         image = image.resize((self.SIZE, self.SIZE), Image.Resampling.LANCZOS)
         color_key_mask = Image.new("L", image.size, 0)
-        ImageDraw.Draw(color_key_mask).ellipse(
-            (1, 1, self.SIZE - 2, self.SIZE - 2), fill=255
+        mask_draw = ImageDraw.Draw(color_key_mask)
+        center_pixel = self.SIZE / 2
+        mask_draw.ellipse(
+            (center_pixel - 54, center_pixel - 54, center_pixel + 54, center_pixel + 54),
+            fill=255,
         )
+        for index in range(24):
+            angle = math.radians(index * 15 - 90)
+            inner = 55 if index % 2 == 0 else 56.5
+            outer = 58
+            mask_draw.line(
+                (
+                    center_pixel + math.cos(angle) * inner,
+                    center_pixel + math.sin(angle) * inner,
+                    center_pixel + math.cos(angle) * outer,
+                    center_pixel + math.sin(angle) * outer,
+                ),
+                fill=255,
+                width=2 if index % 2 == 0 else 1,
+            )
         image.putalpha(color_key_mask)
         return image
 
