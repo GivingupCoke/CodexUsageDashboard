@@ -125,10 +125,14 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         assert len(root._quota_bars) == 2
         assert all(not canvas.find_withtag("fill") for canvas in root._quota_bars)
 
-        root.toggle_collapsed()
-        assert root._collapsed is True
-        root.toggle_collapsed()
-        assert root._collapsed is False
+        root.collapse_button.invoke()
+        root.update()
+        assert root.state() == "withdrawn"
+        assert root._orb_visible()
+        root._orb.open_main()
+        root.update()
+        assert root.state() != "withdrawn"
+        assert not root._orb_visible()
         root._topmost.set(False)
         root._toggle_topmost()
 
@@ -222,33 +226,45 @@ def test_quota_orb_lifecycle_and_rings(monkeypatch):
         assert root._orb is None
         assert not root._orb_visible()
 
-        root.enter_orb_mode()
+        root.collapse_button.invoke()
+        root.update()
         orb = root._orb
         assert orb is not None
         assert root._orb_visible()
+        assert root.state() == "withdrawn"
+        assert dashboard.QuotaOrb.SIZE == 120
 
-        # 外环轨道+进度弧、内环轨道+进度弧、中心圆盘、中心字母
-        assert len(orb.canvas.find_all()) == 6
+        assert len(orb.canvas.find_withtag("orb_art")) == 1
+        assert orb.canvas.itemcget("weekly_value", "text") == "49%"
+        assert orb.canvas.itemcget("weekly_label", "text") == "WEEK"
+        assert orb.canvas.itemcget("five_hour_value", "text") == "5H 40%"
         orb.update_report(current)
-        assert len(orb.canvas.find_all()) == 6
+        assert len(orb.canvas.find_withtag("orb_art")) == 1
 
-        # 无额度数据时只画轨道，不画进度弧
         unknown = make_report()
         unknown.weekly_used_percent = None
         unknown.five_hour_used_percent = None
         orb.update_report(unknown)
-        assert len(orb.canvas.find_all()) == 4
+        assert orb.canvas.itemcget("weekly_value", "text") == "--"
+        assert orb.canvas.itemcget("five_hour_value", "text") == "5H --"
+
+        orb.open_main()
+        root.update()
+        assert root.state() != "withdrawn"
+        assert not root._orb_visible()
 
         root.close_orb()
         assert root._orb is None
         assert not root._orb_visible()
 
         # 悬浮球开启时刷新数据会同步更新球面
-        root.enter_orb_mode()
+        root.collapse_button.invoke()
+        root.update()
         updated = make_report()
         updated.weekly_used_percent = 88
         root._poll_refresh_result.__self__._orb.update_report(updated)
         assert root._orb._report is updated
+        assert root._orb.canvas.itemcget("weekly_value", "text") == "88%"
         root.close_orb()
     finally:
         root.destroy()
@@ -285,11 +301,10 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root.pin_button.cget("bg") == dashboard.ACCENT
         assert root.history_button.cget("text") == "历史记录"
         assert root.refresh_button.cget("text") == "刷新"
-        assert root.orb_button.cget("text") == "悬浮球"
+        assert not hasattr(root, "orb_button")
+        assert not hasattr(root, "_collapsed")
         assert root.history_button.cget("fg") == "#ffffff"
-        assert root.orb_button.cget("fg") == "#ffffff"
         assert root.history_button.cget("bg") == dashboard.ACCENT
-        assert root.orb_button.cget("bg") == dashboard.ACCENT
         assert root.refresh_button.cget("fg") == "#ffffff"
         assert root.history_button.bind("<Enter>")
         assert root.history_button.bind("<Leave>")
@@ -356,12 +371,14 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
         assert root._maximized is False
         assert root.maximize_button.cget("text") == dashboard.MAXIMIZE_ICON
 
-        root.toggle_collapsed()
-        assert root._collapsed is True
-        assert root.collapse_button.cget("text") == dashboard.EXPAND_ICON
-        root.toggle_collapsed()
-        assert root._collapsed is False
-        assert root.collapse_button.cget("text") == dashboard.COLLAPSE_ICON
+        root.collapse_button.invoke()
+        root.update()
+        assert root.state() == "withdrawn"
+        assert root._orb_visible()
+        root._orb.open_main()
+        root.update()
+        assert root.state() != "withdrawn"
+        assert not root._orb_visible()
 
         root._tray_icon = object()
         root.close_button.invoke()
