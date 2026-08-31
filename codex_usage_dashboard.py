@@ -13,6 +13,8 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageFilter, ImageTk
+
 from usage_core import (
     BEIJING,
     ModelUsage,
@@ -57,7 +59,6 @@ WINDOWS_APP_USER_MODEL_ID = "LiHua.CodexUsageDashboard"
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\LiHua.CodexUsageDashboard.SingleInstance"
 PIN_ICON = "\ue718"
 COLLAPSE_ICON = "\ue70e"
-EXPAND_ICON = "\ue70d"
 MINIMIZE_ICON = "\ue921"
 MAXIMIZE_ICON = "\ue922"
 RESTORE_ICON = "\ue923"
@@ -308,12 +309,17 @@ def _enable_native_caption_buttons(window: tk.Misc) -> bool:
 class QuotaOrb:
     """可拖动的圆形悬浮球：外环显示一周额度，内环显示 5 小时额度。"""
 
-    SIZE = 76
-    OUTER_RADIUS = 33
-    OUTER_WIDTH = 7
-    INNER_RADIUS = 22
-    INNER_WIDTH = 6
-    CORE_RADIUS = 13
+    SIZE = 120
+    RENDER_SCALE = 4
+    OUTER_RADIUS = 50
+    OUTER_WIDTH = 4
+    INNER_RADIUS = 40
+    INNER_WIDTH = 4
+    CORE_RADIUS = 33
+    TRANSPARENT_KEY = "#010203"
+    WEEKLY_COLOR = "#55e6ff"
+    FIVE_HOUR_COLOR = "#9b8cff"
+    TRACK_COLOR = "#253248"
 
     def __init__(self, dashboard: UsageDashboard) -> None:
         self.dashboard = dashboard
@@ -321,17 +327,18 @@ class QuotaOrb:
         self.window.title(f"{APP_DISPLAY_NAME} · 悬浮额度球")
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
-        self.window.configure(bg=BG)
+        self.window.configure(bg=self.TRANSPARENT_KEY)
         self.window.resizable(False, False)
-        # 与背景同色的像素变为透明且可点击穿透，圆环之外只剩桌面。
-        self.window.attributes("-transparentcolor", BG)
+        # 独立色键只负责窗口外缘透明，球体的深色玻璃层不会被误删。
+        self.window.attributes("-transparentcolor", self.TRANSPARENT_KEY)
         self.canvas = tk.Canvas(
             self.window,
             width=self.SIZE,
             height=self.SIZE,
-            bg=BG,
+            bg=self.TRANSPARENT_KEY,
             highlightthickness=0,
             bd=0,
+            cursor="hand2",
         )
         self.canvas.pack()
         self._menu = tk.Menu(
@@ -346,14 +353,18 @@ class QuotaOrb:
         )
         self._drag_origin: tuple[int, int, int, int] | None = None
         self._dragged = False
+        self._hovered = False
+        self._orb_photo: ImageTk.PhotoImage | None = None
         self._report: UsageReport | None = dashboard._last_report
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Button-3>", self._show_menu)
+        self.canvas.bind("<Enter>", self._on_hover_enter)
+        self.canvas.bind("<Leave>", self._on_hover_leave)
         screen_right = self.window.winfo_screenwidth()
         screen_bottom = self.window.winfo_screenheight()
-        self.window.geometry(f"{self.SIZE}x{self.SIZE}+{screen_right - 140}+{screen_bottom - 220}")
+        self.window.geometry(f"{self.SIZE}x{self.SIZE}+{screen_right - 180}+{screen_bottom - 260}")
         self._draw()
 
     def show(self) -> None:
@@ -377,22 +388,137 @@ class QuotaOrb:
         self.dashboard._show_main_window()
         self.dashboard._sync_tray_menu()
 
-    def _draw_ring(self, radius: int, width: int, used_percent: float | None) -> None:
-        canvas = self.canvas
-        center = self.SIZE / 2
-        bbox = (center - radius, center - radius, center + radius, center + radius)
-        canvas.create_oval(*bbox, outline=BORDER, width=width)
-        if used_percent is None or used_percent <= 0:
-            return
-        percent = max(0.0, min(100.0, used_percent))
-        canvas.create_arc(
-            *bbox,
-            start=90,
-            extent=-percent * 3.6,
-            style="arc",
-            outline=UsageDashboard._quota_color(used_percent),
-            width=width,
+    @staticmethod
+    def _display_percent(value: float | None) -> str:
+        if value is None:
+            return "--"
+        return f"{max(0.0, min(100.0, value)):.0f}%"
+
+    @staticmethod
+    def _rgba(color: str, alpha: int = 255) -> tuple[int, int, int, int]:
+        value = color.lstrip("#")
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), alpha
+
+    @classmethod
+    def _ring_color(cls, value: float | None, default: str) -> str:
+        if value is not None and value >= 90:
+            return QUOTA_CRITICAL_COLOR
+        if value is not None and value >= 70:
+            return QUOTA_WARN_COLOR
+        return default
+
+    def _render_art(self, weekly: float | None, five_hour: float | None) -> Image.Image:
+        scale = self.RENDER_SCALE
+        size = self.SIZE * scale
+        center = size / 2
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        # 外缘刻度让球体更像精密仪表，同时保持静态，避免后台持续占用 CPU。
+        tick_color = self._rgba("#586a86", 190 if self._hovered else 135)
+        for index in range(24):
+            angle = math.radians(index * 15 - 90)
+            inner = (55 if index % 2 == 0 else 56.5) * scale
+            outer = 58 * scale
+            draw.line(
+                (
+                    center + math.cos(angle) * inner,
+                    center + math.sin(angle) * inner,
+                    center + math.cos(angle) * outer,
+                    center + math.sin(angle) * outer,
+                ),
+                fill=tick_color,
+                width=max(2, scale // 2),
+            )
+
+        # 半透明径向核心：外围深、中心略亮，形成克制的玻璃层次。
+        for radius in range(self.CORE_RADIUS * scale, 0, -1):
+            ratio = radius / (self.CORE_RADIUS * scale)
+            red = int(10 + (1 - ratio) * 8)
+            green = int(20 + (1 - ratio) * 12)
+            blue = int(35 + (1 - ratio) * 18)
+            draw.ellipse(
+                (center - radius, center - radius, center + radius, center + radius),
+                fill=(red, green, blue, 248),
+            )
+        core_radius = self.CORE_RADIUS * scale
+        draw.ellipse(
+            (center - core_radius, center - core_radius, center + core_radius, center + core_radius),
+            outline=self._rgba("#52627d", 180),
+            width=scale,
         )
+
+        glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow)
+        crisp = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        crisp_draw = ImageDraw.Draw(crisp)
+
+        def draw_ring(radius: int, width: int, value: float | None, default_color: str) -> None:
+            scaled_radius = radius * scale
+            bbox = (
+                center - scaled_radius,
+                center - scaled_radius,
+                center + scaled_radius,
+                center + scaled_radius,
+            )
+            crisp_draw.arc(
+                bbox,
+                start=-90,
+                end=270,
+                fill=self._rgba(self.TRACK_COLOR, 235),
+                width=width * scale,
+            )
+            if value is None or value <= 0:
+                return
+            percent = max(0.0, min(100.0, value))
+            color = self._ring_color(value, default_color)
+            end = -90 + percent * 3.6
+            glow_alpha = 230 if self._hovered else 180
+            glow_draw.arc(
+                bbox,
+                start=-90,
+                end=end,
+                fill=self._rgba(color, glow_alpha),
+                width=(width + 4) * scale,
+            )
+            crisp_draw.arc(
+                bbox,
+                start=-90,
+                end=end,
+                fill=self._rgba(color),
+                width=width * scale,
+            )
+            angle = math.radians(end)
+            point_x = center + math.cos(angle) * scaled_radius
+            point_y = center + math.sin(angle) * scaled_radius
+            node_radius = 2.5 * scale
+            glow_draw.ellipse(
+                (
+                    point_x - node_radius * 2,
+                    point_y - node_radius * 2,
+                    point_x + node_radius * 2,
+                    point_y + node_radius * 2,
+                ),
+                fill=self._rgba(color, glow_alpha),
+            )
+            crisp_draw.ellipse(
+                (
+                    point_x - node_radius,
+                    point_y - node_radius,
+                    point_x + node_radius,
+                    point_y + node_radius,
+                ),
+                fill=self._rgba("#f7fbff"),
+                outline=self._rgba(color),
+                width=scale,
+            )
+
+        draw_ring(self.OUTER_RADIUS, self.OUTER_WIDTH, weekly, self.WEEKLY_COLOR)
+        draw_ring(self.INNER_RADIUS, self.INNER_WIDTH, five_hour, self.FIVE_HOUR_COLOR)
+        glow = glow.filter(ImageFilter.GaussianBlur((3.8 if self._hovered else 3.0) * scale))
+        image = Image.alpha_composite(image, glow)
+        image = Image.alpha_composite(image, crisp)
+        return image.resize((self.SIZE, self.SIZE), Image.Resampling.LANCZOS)
 
     def _draw(self) -> None:
         canvas = self.canvas
@@ -400,19 +526,41 @@ class QuotaOrb:
         report = self._report
         weekly = report.weekly_used_percent if report else None
         five_hour = report.five_hour_used_percent if report else None
-        # 外环一周额度，内环 5 小时额度；中心是应用标识。
-        self._draw_ring(self.OUTER_RADIUS, self.OUTER_WIDTH, weekly)
-        self._draw_ring(self.INNER_RADIUS, self.INNER_WIDTH, five_hour)
         center = self.SIZE / 2
-        canvas.create_oval(
-            center - self.CORE_RADIUS,
-            center - self.CORE_RADIUS,
-            center + self.CORE_RADIUS,
-            center + self.CORE_RADIUS,
-            fill=TITLE_BG,
-            outline="",
+        self._orb_photo = ImageTk.PhotoImage(self._render_art(weekly, five_hour), master=self.window)
+        canvas.create_image(center, center, image=self._orb_photo, tags=("orb_art",))
+        canvas.create_text(
+            center,
+            49,
+            text=self._display_percent(weekly),
+            fill="#f5fbff",
+            font=(DISPLAY_FONT, 16, "bold"),
+            tags=("weekly_value",),
         )
-        canvas.create_text(center, center, text="C", fill=ACCENT, font=(DISPLAY_FONT, 9, "bold"))
+        canvas.create_text(
+            center,
+            67,
+            text="WEEK",
+            fill="#7f91aa",
+            font=(UI_FONT, 7, "bold"),
+            tags=("weekly_label",),
+        )
+        canvas.create_text(
+            center,
+            82,
+            text=f"5H {self._display_percent(five_hour)}",
+            fill=self._ring_color(five_hour, self.FIVE_HOUR_COLOR),
+            font=(UI_FONT, 8, "bold"),
+            tags=("five_hour_value",),
+        )
+
+    def _on_hover_enter(self, _event) -> None:
+        self._hovered = True
+        self._draw()
+
+    def _on_hover_leave(self, _event) -> None:
+        self._hovered = False
+        self._draw()
 
     def _show_menu(self, event) -> None:
         menu = self._menu
@@ -471,10 +619,8 @@ class UsageDashboard(tk.Tk):
         self.sessions_root = Path.home() / ".codex" / "sessions"
         self._topmost = tk.BooleanVar(value=True)
         self.model_var = tk.StringVar(value=ALL_MODELS_LABEL)
-        self._collapsed = False
         self._maximized = False
-        self._expanded_geometry = MAIN_WINDOW_GEOMETRY
-        self._restore_geometry = self._expanded_geometry
+        self._restore_geometry = MAIN_WINDOW_GEOMETRY
         self._drag_origin: tuple[int, int, int, int] | None = None
         self._window_handle: int | None = None
         self._taskbar_registration_forced = False
@@ -774,31 +920,6 @@ class UsageDashboard(tk.Tk):
             hover_bg=ACCENT_HOVER,
             pressed_bg=ACCENT_PRESSED_BG,
         )
-        self.orb_button = tk.Button(
-            controls,
-            text="悬浮球",
-            command=self.enter_orb_mode,
-            bg=ACCENT,
-            fg="#ffffff",
-            activebackground=ACCENT_PRESSED_BG,
-            activeforeground="#ffffff",
-            disabledforeground="#d8dcff",
-            font=(UI_FONT, 9, "bold"),
-            relief="flat",
-            bd=0,
-            padx=11,
-            pady=4,
-            highlightthickness=0,
-            takefocus=False,
-            cursor="hand2",
-        )
-        self.orb_button.pack(side="left", padx=(8, 0))
-        self._bind_action_button_feedback(
-            self.orb_button,
-            normal_bg=ACCENT,
-            hover_bg=ACCENT_HOVER,
-            pressed_bg=ACCENT_PRESSED_BG,
-        )
         self.refresh_button = tk.Button(
             controls,
             text="刷新",
@@ -869,7 +990,7 @@ class UsageDashboard(tk.Tk):
         self.collapse_button = self._caption_button(
             self.caption_controls,
             COLLAPSE_ICON,
-            self.toggle_collapsed,
+            self.enter_orb_mode,
         )
         self.collapse_button.pack(side="left", fill="y")
         self.pin_button = self._caption_button(self.caption_controls, PIN_ICON, self._toggle_topmost)
@@ -960,20 +1081,6 @@ class UsageDashboard(tk.Tk):
         if (event.state & 0x4) and event.keysym.lower() in {"a", "c"}:
             return None
         return "break"
-
-    def toggle_collapsed(self) -> None:
-        self._collapsed = not self._collapsed
-        if self._collapsed:
-            self._expanded_geometry = self.geometry()
-            self.content.pack_forget()
-            self.collapse_button.configure(text=EXPAND_ICON)
-            self.minsize(MAIN_WINDOW_MIN_WIDTH, 40)
-            self.geometry(f"{max(MAIN_WINDOW_MIN_WIDTH, self.winfo_width())}x40+{self.winfo_x()}+{self.winfo_y()}")
-        else:
-            self.content.pack(fill="both", expand=True)
-            self.collapse_button.configure(text=COLLAPSE_ICON)
-            self.minsize(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
-            self.geometry(self._expanded_geometry)
 
     def _toggle_topmost(self) -> None:
         self._topmost.set(not self._topmost.get())
@@ -1404,6 +1511,7 @@ class UsageDashboard(tk.Tk):
     def enter_orb_mode(self) -> None:
         self._ensure_orb().show()
         self.withdraw()
+        self._sync_tray_menu()
 
     def close_orb(self) -> None:
         if self._orb is not None:
