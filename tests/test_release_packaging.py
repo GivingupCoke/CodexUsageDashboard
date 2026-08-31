@@ -59,4 +59,4 @@ def test_readme_leads_with_double_click_release_instructions():
     assert "CodexUsageDashboard.exe" in readme[ordinary_user:developer]
     assert "无需安装 Python" in readme[ordinary_user:developer]
     assert "py -3.12 -m venv" not in readme[:developer]
-    assert "git tag v1.1" in readme
+    assert "git tag v1.2" in readme

@@ -139,7 +139,7 @@ def test_dashboard_and_history_user_flow(monkeypatch):
         root.open_history()
         history_window = root._history_window
         assert history_window is not None
-        assert history_window.title() == "Codex Usage v1.1 · 历史用量"
+        assert history_window.title() == "Codex Usage v1.2 · 历史用量"
         history_window.withdraw()
         pump_until(root, lambda: len(history_window.table.get_children()) == 8)
         assert len(history_window.chart_frame.winfo_children()) == 1
@@ -286,9 +286,9 @@ def test_custom_titlebar_and_compact_dashboard_hierarchy(monkeypatch):
     try:
         pump_until(root, lambda: root._last_report is current)
 
-        assert dashboard.APP_VERSION == "1.1"
-        assert root.title() == "Codex Usage v1.1 · 今日用量"
-        assert root.app_title_label.cget("text") == "Codex Usage v1.1"
+        assert dashboard.APP_VERSION == "1.2"
+        assert root.title() == "Codex Usage v1.2 · 今日用量"
+        assert root.app_title_label.cget("text") == "Codex Usage v1.2"
         assert root.geometry().split("+", 1)[0] == dashboard.MAIN_WINDOW_GEOMETRY
         assert root.minsize() == (dashboard.MAIN_WINDOW_MIN_WIDTH, dashboard.MAIN_WINDOW_MIN_HEIGHT)
         root.update_idletasks()

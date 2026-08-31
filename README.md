@@ -218,8 +218,8 @@ dist\CodexUsageDashboard.exe
 示例：
 
 ```powershell
-git tag v1.1
-git push origin v1.1
+git tag v1.2
+git push origin v1.2
 ```
 
 也可以在 GitHub Actions 页面手动运行工作流。手动运行只生成可下载的构建产物，不自动创建正式 Release。
