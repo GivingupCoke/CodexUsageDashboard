@@ -237,6 +237,10 @@ def test_quota_orb_lifecycle_and_rings(monkeypatch):
         alpha_values = set(rendered.getchannel("A").tobytes())
         assert alpha_values <= {0, 255}
         assert rendered.getpixel((0, 0))[3] == 0
+        assert rendered.getpixel((60, 60))[3] == 255
+        # 外缘只保留受控刻度，刻度之间必须露出桌面，不能再是一整块黑圆盘。
+        assert rendered.getpixel((60, 3))[3] == 255
+        assert rendered.getpixel((67, 4))[3] == 0
 
         assert len(orb.canvas.find_withtag("orb_art")) == 1
         assert orb.canvas.itemcget("weekly_value", "text") == "49%"
