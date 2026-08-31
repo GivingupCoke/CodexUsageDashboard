@@ -63,7 +63,9 @@ MAXIMIZE_ICON = "\ue922"
 RESTORE_ICON = "\ue923"
 CLOSE_ICON = "\ue8bb"
 WM_NCLBUTTONDOWN = 0x00A1
+WM_SYSCOMMAND = 0x0112
 HTCAPTION = 2
+SC_MOVE = 0xF010
 SWP_SHOWWINDOW = 0x0040
 SW_HIDE = 0
 SW_SHOW = 5
@@ -1146,10 +1148,10 @@ class UsageDashboard(tk.Tk):
                 ]
                 user32.PostMessageW.restype = ctypes.c_bool
                 user32.ReleaseCapture()
-                # SendMessageW enters the native move loop before ctypes has
-                # reacquired the GIL, so a nested Tk callback can terminate
-                # Python. Queue the same message and return to Tk first.
-                if user32.PostMessageW(self._window_handle, WM_NCLBUTTONDOWN, HTCAPTION, 0):
+                # A synchronous WM_NCLBUTTONDOWN enters the move loop before
+                # ctypes reacquires the GIL. Queue the equivalent system move
+                # command so Tk can finish this callback first.
+                if user32.PostMessageW(self._window_handle, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0):
                     return "break"
             except (AttributeError, OSError):
                 pass
